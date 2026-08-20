@@ -1,0 +1,49 @@
+name: NSE Paper Trading Bot
+
+on:
+  schedule:
+    - cron: "40 3 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  paper-trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 380
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest sanity check
+        run: python main.py backtest
+        continue-on-error: true
+
+      - name: Run live paper trading until square-off
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py paper
+
+      - name: Upload trade database as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-db-${{ github.run_id }}
+          path: db/trading.db
+          retention-days: 90
+
+      - name: Upload logs as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
