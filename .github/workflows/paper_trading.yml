@@ -1,14 +1,37 @@
 name: NSE Paper Trading Bot
 
+# Runs entirely on GitHub's free cloud runners. Nothing installs on your PC.
+#
+# Schedule: triggers every weekday at 9:10 AM IST (3:40 AM UTC), which is
+# a few minutes before market open, so the bot is ready to poll right at
+# 9:15 AM IST. It runs until the end-of-day square-off (15:15 IST) and
+# then exits on its own -- see main.py's run_paper_trading_mode().
+#
+# NOTE: GitHub cron schedules can occasionally fire a few minutes late
+# during high load. That's a platform limitation, not something this
+# workflow can control. If timing precision matters to you, an always-on
+# VM (see README) is more reliable than a scheduled job.
+
 on:
   schedule:
-    - cron: "40 3 * * 1-5"
-  workflow_dispatch: {}
+    - cron: "40 3 * * 1-5"   # 3:40 AM UTC = 9:10 AM IST, Mon-Fri
+  workflow_dispatch:
+    inputs:
+      timeframe:
+        description: "Timeframe: a number (1,3,5,15,30,60) or 'all'"
+        required: false
+        default: "5"
+        type: string
+      index:
+        description: "Index: NIFTY, BANKNIFTY, FINNIFTY, or 'all'"
+        required: false
+        default: "all"
+        type: string
 
 jobs:
   paper-trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 380
+    timeout-minutes: 380       # safety cap: auto-kill after ~6h20m even if something hangs
 
     steps:
       - name: Check out repository
@@ -22,15 +45,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Test Telegram connectivity
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python test_telegram.py
+
       - name: Run backtest sanity check
-        run: python main.py backtest
-        continue-on-error: true
+        run: python main.py backtest --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
+        continue-on-error: true   # don't block paper trading if backtest step has a hiccup
 
       - name: Run live paper trading until square-off
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py paper
+        run: python main.py paper --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
 
       - name: Upload trade database as an artifact
         if: always()
