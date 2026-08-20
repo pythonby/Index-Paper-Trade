@@ -134,6 +134,10 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
+# Name shown at the top of every Telegram message this bot sends.
+# Change this to whatever you'd like -- no code changes needed elsewhere.
+BOT_DISPLAY_NAME = "📍 Nushi Index"
+
 # ---------------------------------------------------------------------------
 # 9. DATA SOURCES
 # ---------------------------------------------------------------------------
