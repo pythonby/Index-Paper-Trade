@@ -19,7 +19,7 @@ from typing import List, Optional
 import pandas as pd
 
 import config
-from indicators import ema, vwap, atr, rsi, volume_avg, realized_volatility, opening_range
+from indicators import ema, vwap, atr, rsi, volume_avg, realized_volatility, opening_range, bollinger_bands
 from options.selector import select_backtest_contract
 from regime.detector import classify_regime
 from signal.scorer import score_signal
@@ -70,6 +70,11 @@ def prepare_dataframe(df: pd.DataFrame, ema_fast: int, ema_slow: int,
     or_high, or_low = opening_range(df, orb_minutes)
     df[f"or_high_{orb_minutes}"] = or_high
     df[f"or_low_{orb_minutes}"] = or_low
+
+    bb_upper, bb_mid, bb_lower = bollinger_bands(df["close"], config.BOLLINGER_WINDOW, config.BOLLINGER_STD)
+    df["bb_upper"] = bb_upper
+    df["bb_mid"] = bb_mid
+    df["bb_lower"] = bb_lower
     return df
 
 

@@ -73,6 +73,16 @@ def realized_volatility(df: pd.DataFrame, window: int = 20) -> pd.Series:
     return log_ret.rolling(window=window).std() * np.sqrt(bars_per_day * 252)
 
 
+def bollinger_bands(series: pd.Series, window: int = 20, num_std: float = 2.0):
+    """Returns (upper, mid, lower) bands. Used by the mean-reversion strategy
+    for sideways/range-bound markets."""
+    mid = series.rolling(window=window).mean()
+    std = series.rolling(window=window).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    return upper, mid, lower
+
+
 def is_bullish_candle(df: pd.DataFrame) -> pd.Series:
     return df["close"] > df["open"]
 
