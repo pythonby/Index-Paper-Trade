@@ -103,11 +103,22 @@ ENABLED_STRATEGIES = {
     "vwap_ema_momentum": True,
     "opening_range_breakout": True,
     "trend_pullback": True,
+    "mean_reversion": True,       # Strategy D -- sideways/range-bound markets only
 }
 
 EMA_FAST_CANDIDATES = [5, 8, 9]
 EMA_SLOW_CANDIDATES = [13, 21, 26]
 ORB_RANGE_MINUTES_CANDIDATES = [15, 30]
+
+BOLLINGER_WINDOW = 20
+BOLLINGER_STD = 2.0
+MEAN_REVERSION_RSI_OVERSOLD = 35
+MEAN_REVERSION_RSI_OVERBOUGHT = 65
+
+# Which timeframes to test in "python main.py backtest". Testing all 6 is
+# thorough but slow (many more combinations); trim this list if a full run
+# is taking too long in your environment (e.g. on a GitHub Actions runner).
+BACKTEST_TIMEFRAMES_MIN = [5, 15]   # add 1, 3, 30, 60 here for a full sweep
 
 # ---------------------------------------------------------------------------
 # 7. DATABASE / LOGGING

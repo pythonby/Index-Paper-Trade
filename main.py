@@ -13,6 +13,7 @@ See README.md for full setup instructions.
 
 import sys
 import time
+import argparse
 import logging
 import datetime as dt
 
@@ -31,6 +32,7 @@ from reports.performance import compute_metrics, build_comparison_table, is_robu
 from strategies.vwap_ema_momentum import VwapEmaMomentum
 from strategies.opening_range_breakout import OpeningRangeBreakout
 from strategies.trend_pullback import TrendPullback
+from strategies.mean_reversion import MeanReversion
 from paper_trading.engine import PaperTradingEngine
 from notify import telegram
 
@@ -85,53 +87,80 @@ def build_strategy_set():
         strategies.append(OpeningRangeBreakout(range_minutes=config.ORB_RANGE_MINUTES_CANDIDATES[0]))
     if config.ENABLED_STRATEGIES.get("trend_pullback"):
         strategies.append(TrendPullback())
+    if config.ENABLED_STRATEGIES.get("mean_reversion"):
+        strategies.append(MeanReversion())
     return strategies
 
 
-def run_backtest_mode():
+def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
     print_first_run_status()
-    print("\nStarting backtest across all instruments/timeframes/strategies...\n")
+
+    if timeframe_arg is None or timeframe_arg == "default":
+        timeframes = config.BACKTEST_TIMEFRAMES_MIN
+    elif timeframe_arg == "all":
+        timeframes = config.TIMEFRAMES_MIN
+    else:
+        timeframes = [int(timeframe_arg)]
+
+    if index_arg is None or index_arg == "all":
+        instruments = config.INSTRUMENTS
+    else:
+        instruments = [index_arg.upper()]
+
+    print(f"\nStarting backtest across instruments {instruments} x timeframes {timeframes} x strategies...\n")
+    print("(Testing more timeframes/instruments/EMA combinations takes longer -- use --timeframe "
+          "and --index to narrow a run, or 'all' for a full sweep.)\n")
 
     all_results = {}
     any_robust = False
 
-    for index_name in config.INSTRUMENTS:
-        try:
-            raw_df = fetch_index_history(index_name, config.DEFAULT_TIMEFRAME_MIN, period="60d")
-        except DataFeedError as e:
-            print(f"[{index_name}] Could not fetch historical data: {e}")
-            print(f"[{index_name}] Skipping -- see README for free-data-source limitations.")
-            continue
+    strategy_registry = [
+        (lambda: [VwapEmaMomentum()], "vwap_ema_momentum"),
+        (lambda: [OpeningRangeBreakout()], "opening_range_breakout"),
+        (lambda: [TrendPullback()], "trend_pullback"),
+        (lambda: [MeanReversion()], "mean_reversion"),
+    ]
 
-        for ema_fast in config.EMA_FAST_CANDIDATES:
-            for ema_slow in config.EMA_SLOW_CANDIDATES:
-                if ema_fast >= ema_slow:
-                    continue
+    for index_name in instruments:
+        for timeframe_min in timeframes:
+            period = "7d" if timeframe_min == 1 else "60d"
+            try:
+                raw_df = fetch_index_history(index_name, timeframe_min, period=period)
+            except DataFeedError as e:
+                print(f"[{index_name} {timeframe_min}m] Could not fetch historical data: {e}")
+                print(f"[{index_name} {timeframe_min}m] Skipping -- see README for free-data-source limitations.")
+                continue
 
-                df = prepare_dataframe(raw_df, ema_fast, ema_slow, config.ORB_RANGE_MINUTES_CANDIDATES[0])
+            if len(raw_df) < 60:
+                print(f"[{index_name} {timeframe_min}m] Not enough bars ({len(raw_df)}) for a "
+                      f"meaningful backtest at this timeframe -- skipping.")
+                continue
 
-                for strat_builder, strat_name in [
-                    (lambda: [VwapEmaMomentum()], "vwap_ema_momentum"),
-                    (lambda: [OpeningRangeBreakout()], "opening_range_breakout"),
-                    (lambda: [TrendPullback()], "trend_pullback"),
-                ]:
-                    if not config.ENABLED_STRATEGIES.get(strat_name):
+            for ema_fast in config.EMA_FAST_CANDIDATES:
+                for ema_slow in config.EMA_SLOW_CANDIDATES:
+                    if ema_fast >= ema_slow:
                         continue
 
-                    folds = rolling_walk_forward(df, index_name, strat_builder, config.DEFAULT_TIMEFRAME_MIN)
-                    fold_summary = summarize_folds(folds)
+                    df = prepare_dataframe(raw_df, ema_fast, ema_slow, config.ORB_RANGE_MINUTES_CANDIDATES[0])
 
-                    full_result = run_backtest(df, index_name, strat_builder(), config.DEFAULT_TIMEFRAME_MIN)
-                    metrics = compute_metrics(full_result.trades, full_result.equity_curve, config.STARTING_CAPITAL)
+                    for strat_builder, strat_name in strategy_registry:
+                        if not config.ENABLED_STRATEGIES.get(strat_name):
+                            continue
 
-                    key = (f"{strat_name} (EMA{ema_fast}/{ema_slow})", index_name, config.DEFAULT_TIMEFRAME_MIN)
-                    all_results[key] = metrics
+                        folds = rolling_walk_forward(df, index_name, strat_builder, timeframe_min)
+                        fold_summary = summarize_folds(folds)
 
-                    if fold_summary["overall_robust"]:
-                        any_robust = True
-                    print(f"[{index_name}] {strat_name} EMA{ema_fast}/{ema_slow}: "
-                          f"{metrics['num_trades']} trades, net Rs{metrics['net_pnl']}, "
-                          f"walk-forward robust={fold_summary['overall_robust']} ({fold_summary['reason']})")
+                        full_result = run_backtest(df, index_name, strat_builder(), timeframe_min)
+                        metrics = compute_metrics(full_result.trades, full_result.equity_curve, config.STARTING_CAPITAL)
+
+                        key = (f"{strat_name} (EMA{ema_fast}/{ema_slow})", index_name, timeframe_min)
+                        all_results[key] = metrics
+
+                        if fold_summary["overall_robust"]:
+                            any_robust = True
+                        print(f"[{index_name} {timeframe_min}m] {strat_name} EMA{ema_fast}/{ema_slow}: "
+                              f"{metrics['num_trades']} trades, net Rs{metrics['net_pnl']}, "
+                              f"walk-forward robust={fold_summary['overall_robust']} ({fold_summary['reason']})")
 
     print("\n" + "=" * 100)
     print("STRATEGY COMPARISON TABLE")
@@ -188,22 +217,53 @@ def _send_end_of_day_report():
         logging.getLogger("main").warning("Could not send daily report to Telegram (logged locally instead).")
 
 
-def run_paper_trading_mode():
+def run_paper_trading_mode(timeframe_arg: str = None, index_arg: str = None):
     """
-    Runs the live polling loop until end-of-day square-off, then EXITS
-    (does not sleep forever). This is intentional for cloud/scheduled
-    execution (e.g. a GitHub Actions cron job that triggers fresh every
-    trading day) -- there is no need to keep a process idling all night.
+    timeframe_arg:
+        None / "default" -> uses config.DEFAULT_TIMEFRAME_MIN (single timeframe, as before)
+        "all"             -> runs one independent engine per (index, timeframe) combination
+        "<number>"        -> runs that single timeframe only, e.g. "15"
+
+    index_arg:
+        None / "all" -> runs every instrument in config.INSTRUMENTS
+        "<NAME>"      -> runs only that one instrument, e.g. "NIFTY"
+
+    NOTE on combining "all" timeframe with multiple indices: each (index, timeframe)
+    pair is treated as its own independent bot instance, each individually respecting
+    MAX_OPEN_POSITIONS=1 for ITSELF. This means running all 6 timeframes for all 3
+    indices could have up to 18 positions open at once (one per combination) -- this
+    is a deliberate trade-off to let you compare timeframes/indices live, not a
+    violation of the "1 position" rule within any single strategy/timeframe instance.
+    If you want a strict single global position, run one index and one timeframe at a time.
     """
     print_first_run_status()
     database.init_db()
 
-    engines = []
-    for index_name in config.INSTRUMENTS:
-        strategies = build_strategy_set()
-        engines.append(PaperTradingEngine(index_name, strategies, config.DEFAULT_TIMEFRAME_MIN))
+    if timeframe_arg is None or timeframe_arg == "default":
+        timeframes_to_run = [config.DEFAULT_TIMEFRAME_MIN]
+    elif timeframe_arg == "all":
+        timeframes_to_run = config.TIMEFRAMES_MIN
+    else:
+        timeframes_to_run = [int(timeframe_arg)]
 
-    print(f"\nStarting live paper-trading loop for {config.INSTRUMENTS}. Press Ctrl+C to stop safely.\n")
+    if index_arg is None or index_arg == "all":
+        instruments_to_run = config.INSTRUMENTS
+    else:
+        instruments_to_run = [index_arg.upper()]
+
+    if len(timeframes_to_run) > 1 or len(instruments_to_run) > 1:
+        print(f"\n⚠️  Running {len(instruments_to_run)} instrument(s) x {len(timeframes_to_run)} "
+              f"timeframe(s) = {len(instruments_to_run) * len(timeframes_to_run)} independent engines. "
+              f"See the note in run_paper_trading_mode() docstring about position limits.\n")
+
+    engines = []
+    for index_name in instruments_to_run:
+        for tf in timeframes_to_run:
+            strategies = build_strategy_set()
+            engines.append(PaperTradingEngine(index_name, strategies, tf))
+
+    print(f"\nStarting live paper-trading loop for {len(engines)} engine(s) "
+          f"({instruments_to_run} x {timeframes_to_run}). Press Ctrl+C to stop safely.\n")
 
     try:
         while True:
@@ -240,17 +300,32 @@ def run_paper_trading_mode():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="NSE index options paper-trading system")
+    parser.add_argument("mode", choices=["backtest", "paper", "status"], help="What to run")
+    parser.add_argument(
+        "--timeframe", default=None,
+        help=(
+            "Which timeframe to use: a number in minutes (1,3,5,15,30,60), "
+            "or 'all' to run every configured timeframe together. "
+            "If omitted, uses the default (5m for paper; config.BACKTEST_TIMEFRAMES_MIN for backtest)."
+        ),
+    )
+    parser.add_argument(
+        "--index", default=None,
+        help=(
+            "Which instrument to trade: NIFTY, BANKNIFTY, or FINNIFTY, "
+            "or 'all' to run every configured instrument together. "
+            "If omitted, runs all instruments (same as 'all')."
+        ),
+    )
+    args = parser.parse_args()
+
     setup_logging()
     database.init_db()
 
-    mode = sys.argv[1] if len(sys.argv) > 1 else "status"
-
-    if mode == "backtest":
-        run_backtest_mode()
-    elif mode == "paper":
-        run_paper_trading_mode()
-    elif mode == "status":
+    if args.mode == "backtest":
+        run_backtest_mode(args.timeframe, args.index)
+    elif args.mode == "paper":
+        run_paper_trading_mode(args.timeframe, args.index)
+    elif args.mode == "status":
         print_first_run_status()
-    else:
-        print(f"Unknown mode '{mode}'. Use: backtest | paper | status")
-        sys.exit(1)
