@@ -45,13 +45,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Test Telegram connectivity
+      - name: Restore trade database from previous run
+        uses: actions/download-artifact@v4
+        with:
+          name: trading-db-persistent
+          path: db/
+        continue-on-error: true   # fine if this is the very first run and no artifact exists yet
+
+      - name: Run backtest sanity check
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python test_telegram.py
-
-      - name: Run backtest sanity check
         run: python main.py backtest --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
         continue-on-error: true   # don't block paper trading if backtest step has a hiccup
 
@@ -61,13 +65,14 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py paper --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
 
-      - name: Upload trade database as an artifact
+      - name: Persist trade database for next run
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trading-db-${{ github.run_id }}
+          name: trading-db-persistent
           path: db/trading.db
           retention-days: 90
+          overwrite: true
 
       - name: Upload logs as an artifact
         if: always()

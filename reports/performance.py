@@ -96,8 +96,9 @@ def is_robust(metrics_in_sample: dict, metrics_out_of_sample: dict,
     return True, "Passed robustness checks"
 
 
-def format_daily_report(starting_capital: float, ending_capital: float, trades: list,
-                         max_drawdown: float, strategy_pnls: dict) -> str:
+def format_period_report(period_label: str, starting_capital: float, ending_capital: float, trades: list,
+                          max_drawdown: float, strategy_pnls: dict) -> str:
+    """period_label: 'DAILY', 'WEEKLY', or 'MONTHLY' -- controls the header only."""
     df = pd.DataFrame(trades) if trades else pd.DataFrame(columns=["net_pnl", "gross_pnl", "charges", "slippage_cost"])
     wins = df[df["net_pnl"] > 0] if len(df) else df
     losses = df[df["net_pnl"] <= 0] if len(df) else df
@@ -113,7 +114,7 @@ def format_daily_report(starting_capital: float, ending_capital: float, trades: 
         f"{i+1}. {name}: Rs{pnl:.0f}" for i, (name, pnl) in enumerate(strategy_pnls.items())
     )
 
-    return f"""📈 DAILY PAPER TRADING REPORT
+    return f"""📈 {period_label} PAPER TRADING REPORT
 [PAPER TRADE — NOT REAL MONEY]
 
 Starting Capital: Rs{starting_capital:,.0f}
@@ -135,5 +136,11 @@ Best Trade: Rs{best:.0f}
 Worst Trade: Rs{worst:.0f}
 
 Strategy Performance:
-{strategy_lines if strategy_lines else "(no trades today)"}
+{strategy_lines if strategy_lines else "(no trades this period)"}
 """
+
+
+def format_daily_report(starting_capital: float, ending_capital: float, trades: list,
+                         max_drawdown: float, strategy_pnls: dict) -> str:
+    """Kept for backward compatibility -- just calls format_period_report with 'DAILY'."""
+    return format_period_report("DAILY", starting_capital, ending_capital, trades, max_drawdown, strategy_pnls)

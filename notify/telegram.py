@@ -112,6 +112,15 @@ def send_daily_report(report_text: str):
     return _send(f"{BOT_NAME}\n{BANNER}\n\n{report_text}")
 
 
+def send_backtest_summary(summary_text: str):
+    """Telegram has a 4096-character message limit, so long comparison
+    tables are truncated with a pointer to the full GitHub Actions log."""
+    max_len = 3500
+    if len(summary_text) > max_len:
+        summary_text = summary_text[:max_len] + "\n\n... (truncated -- see full results in the GitHub Actions log for this run)"
+    return _send(f"{BOT_NAME}\n📊 BACKTEST REPORT\n{BANNER}\n\n{summary_text}")
+
+
 def send_alert(message: str):
     """For fail-safe / halt notifications (data feed down, Telegram issue on
     a prior attempt, daily loss limit hit, etc.)."""
