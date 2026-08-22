@@ -374,6 +374,21 @@ def run_paper_trading_mode(timeframe_arg: str = None, index_arg: str = None):
                                          f"Halting that instrument's trading until restarted.")
                     eng.halted = True
 
+            # If every engine has hit a fail-safe halt (data feed issue, error, etc.),
+            # there is nothing productive left to do today. Exit now instead of idling
+            # in 30-second polls until square-off -- this avoids burning through free
+            # GitHub Actions minutes (and the platform's hard 6-hour job cap) for no
+            # reason. A halted engine will simply try again fresh on the next scheduled run.
+            all_halted = all(
+                eng.halted or (eng.risk_state is not None and eng.risk_state.trading_halted)
+                for eng in engines
+            )
+            if all_halted:
+                print("\nAll engines are halted (fail-safe or risk limit) -- nothing further "
+                      "can happen today. Exiting early instead of idling until square-off.")
+                _send_end_of_day_report()
+                break
+
             time.sleep(30)  # poll interval
     except KeyboardInterrupt:
         print("\nShutdown requested. Squaring off any open paper positions safely...")

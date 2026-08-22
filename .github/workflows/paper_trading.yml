@@ -31,7 +31,7 @@ on:
 jobs:
   paper-trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 380       # safety cap: auto-kill after ~6h20m even if something hangs
+    timeout-minutes: 350       # GitHub's hard cap is 360 min (6h) -- stay safely under it
 
     steps:
       - name: Check out repository

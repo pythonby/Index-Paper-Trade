@@ -106,7 +106,12 @@ def fetch_index_history(symbol: str, interval_min: int, period: str = "60d") -> 
     df = df[["open", "high", "low", "close", "volume"]].dropna()
 
     if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
+        # IMPORTANT: yfinance intraday bars for NSE tickers come back as naive
+        # timestamps that are ALREADY in exchange-local time (Asia/Kolkata),
+        # not UTC. Localizing as UTC first (a previous bug) added a false
+        # +5:30 offset, which made fresh data look "stale" or even from the
+        # future and incorrectly triggered the fail-safe halt.
+        df.index = df.index.tz_localize("Asia/Kolkata")
     else:
         df.index = df.index.tz_convert("Asia/Kolkata")
 
