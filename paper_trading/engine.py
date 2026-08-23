@@ -30,6 +30,21 @@ from db import database
 
 logger = logging.getLogger("paper_trading.engine")
 
+# Module-level dedup: when running multiple timeframes for the same index
+# (e.g. --timeframe all), each timeframe is an independent engine and would
+# otherwise all send their own near-identical "data is stale" / halt alert.
+# We only actually send the Telegram alert once per (index, day); repeats
+# are still logged locally so nothing is silently hidden, just not spammed.
+_alerted_today: dict = {}  # index_name -> date already alerted
+
+
+def _should_send_alert(index_name: str) -> bool:
+    today = dt.date.today()
+    if _alerted_today.get(index_name) == today:
+        return False
+    _alerted_today[index_name] = today
+    return True
+
 
 class PaperTradingEngine:
     def __init__(self, index_name: str, strategies: list, timeframe_min: int = config.DEFAULT_TIMEFRAME_MIN):
@@ -52,9 +67,12 @@ class PaperTradingEngine:
 
     def _fail_safe_stop(self, reason: str):
         self.halted = True
-        logger.error("FAIL-SAFE TRIGGERED: %s", reason)
+        logger.error("FAIL-SAFE TRIGGERED [%s %sm]: %s", self.index_name, self.timeframe_min, reason)
+        if not _should_send_alert(self.index_name):
+            logger.info("Suppressing duplicate Telegram alert for %s (already sent today).", self.index_name)
+            return
         try:
-            telegram.send_alert(f"Trading halted: {reason}")
+            telegram.send_alert(f"Trading halted for {self.index_name}: {reason}")
         except Exception:
             logger.error("Also failed to send the fail-safe Telegram alert.")
 
