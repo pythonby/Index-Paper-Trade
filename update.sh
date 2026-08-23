@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 echo "Step 1: Extracting zip..."
-unzip -o nifty_paper_trading_v12.zip
+unzip -o nifty_paper_trading_v13.zip
 
 echo "Step 2: Copying files..."
 cp -r nifty_paper_trading/* .
@@ -9,7 +9,7 @@ cp -r nifty_paper_trading/.github .
 cp nifty_paper_trading/.gitignore .
 
 echo "Step 3: Cleaning up..."
-rm -rf nifty_paper_trading nifty_paper_trading_v12.zip
+rm -rf nifty_paper_trading nifty_paper_trading_v13.zip
 
 echo "Step 4: Git add..."
 git add -A
