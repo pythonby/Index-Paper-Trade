@@ -28,7 +28,7 @@ from db import database
 from data.fetcher import fetch_index_history, DataFeedError
 from backtest.engine import prepare_dataframe, run_backtest
 from validation.walkforward import rolling_walk_forward, summarize_folds
-from reports.performance import compute_metrics, build_comparison_table, is_robust, format_daily_report, format_period_report
+from reports.performance import compute_metrics, build_comparison_table, build_telegram_summary, is_robust, format_daily_report, format_period_report
 from strategies.vwap_ema_momentum import VwapEmaMomentum
 from strategies.opening_range_breakout import OpeningRangeBreakout
 from strategies.trend_pullback import TrendPullback
@@ -185,7 +185,7 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         print(selection_text)
     print("=" * 100)
 
-    telegram_summary = f"{selection_text}\n\n{comparison_table}"
+    telegram_summary = f"{selection_text}\n\n{build_telegram_summary(all_results)}"
     try:
         telegram.send_backtest_summary(telegram_summary)
     except telegram.TelegramError:

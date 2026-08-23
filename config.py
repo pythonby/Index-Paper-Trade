@@ -22,7 +22,8 @@ INSTRUMENTS = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
 # Only long options are ever allowed. Do not add "SELL_CE" / "SELL_PE".
 ALLOWED_ACTIONS = ["BUY_CE", "BUY_PE"]
 
-TIMEFRAMES_MIN = [1, 3, 5, 15, 30, 60]   # in minutes
+TIMEFRAMES_MIN = [1, 5, 15, 30, 60]   # in minutes -- Yahoo Finance does NOT support a
+                                        # 3-minute interval, so it's intentionally excluded
 DEFAULT_TIMEFRAME_MIN = 5
 
 INTRADAY_ONLY = True
@@ -118,7 +119,7 @@ MEAN_REVERSION_RSI_OVERBOUGHT = 65
 # Which timeframes to test in "python main.py backtest". Testing all 6 is
 # thorough but slow (many more combinations); trim this list if a full run
 # is taking too long in your environment (e.g. on a GitHub Actions runner).
-BACKTEST_TIMEFRAMES_MIN = [5, 15]   # add 1, 3, 30, 60 here for a full sweep
+BACKTEST_TIMEFRAMES_MIN = [5, 15]   # add 1, 30, 60 here for a full sweep (3m not supported by Yahoo)
 
 # ---------------------------------------------------------------------------
 # 7. DATABASE / LOGGING

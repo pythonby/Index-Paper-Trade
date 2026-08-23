@@ -26,6 +26,14 @@ def vwap(df: pd.DataFrame) -> pd.Series:
     """
     Session-anchored VWAP. Resets at the start of each trading day.
     Requires df.index to be a DatetimeIndex.
+
+    IMPORTANT: NSE index tickers (e.g. ^NSEI, ^NSEBANK) are not tradeable
+    instruments, so Yahoo Finance reports volume=0 for every bar. A true
+    volume-weighted average is undefined when cumulative volume is 0, so
+    we fall back to a simple (unweighted) cumulative average of the
+    typical price for any day where volume is entirely zero. This keeps
+    VWAP-dependent strategies functional on index data instead of
+    silently producing NaN for the whole session.
     """
     typical_price = (df["high"] + df["low"] + df["close"]) / 3.0
     tpv = typical_price * df["volume"]
@@ -33,8 +41,13 @@ def vwap(df: pd.DataFrame) -> pd.Series:
     day = df.index.date
     cum_tpv = pd.Series(tpv, index=df.index).groupby(day).cumsum()
     cum_vol = pd.Series(df["volume"], index=df.index).groupby(day).cumsum()
+    cum_count = pd.Series(1, index=df.index).groupby(day).cumsum()
+    cum_typical = pd.Series(typical_price, index=df.index).groupby(day).cumsum()
 
-    return cum_tpv / cum_vol.replace(0, np.nan)
+    weighted_vwap = cum_tpv / cum_vol.replace(0, np.nan)
+    unweighted_fallback = cum_typical / cum_count
+
+    return weighted_vwap.where(cum_vol > 0, unweighted_fallback)
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:

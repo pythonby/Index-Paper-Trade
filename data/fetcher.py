@@ -70,7 +70,7 @@ def fetch_index_history(symbol: str, interval_min: int, period: str = "60d") -> 
     if ticker is None:
         raise DataFeedError(f"No Yahoo Finance mapping configured for {symbol}")
 
-    interval_map = {1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m", 60: "60m"}
+    interval_map = {1: "1m", 5: "5m", 15: "15m", 30: "30m", 60: "60m"}
     yf_interval = interval_map.get(interval_min)
     if yf_interval is None:
         raise DataFeedError(f"Unsupported interval {interval_min}m")

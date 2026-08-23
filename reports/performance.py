@@ -53,6 +53,9 @@ def build_comparison_table(results_by_key: dict) -> str:
     """
     results_by_key: { (strategy, index, timeframe): metrics_dict }
     Returns a markdown table string matching the required format.
+    NOTE: this is for the GitHub Actions LOG (which renders markdown fine).
+    For Telegram, use build_telegram_summary() instead -- Telegram does not
+    render markdown pipe-tables, so this format looks like garbled text there.
     """
     header = "| Strategy | Index | Timeframe | Trades | Win Rate | Profit Factor | Net P&L | Max DD |\n"
     header += "|----------|-------|-----------|-------:|---------:|---------------:|--------:|-------:|\n"
@@ -65,6 +68,49 @@ def build_comparison_table(results_by_key: dict) -> str:
             f"{m['win_rate']:.1f}% | {pf_str} | Rs{m['net_pnl']:.0f} | Rs{m['max_drawdown']:.0f} |"
         )
     return header + "\n".join(rows)
+
+
+def build_telegram_summary(results_by_key: dict, max_rows: int = 15) -> str:
+    """
+    Compact, plain-text summary suitable for Telegram (no markdown tables,
+    since Telegram doesn't render them -- they show up as raw '|' text).
+
+    Shows: total combinations tested, how many had zero trades vs some
+    trades, and up to `max_rows` of the combinations that actually
+    produced trades (sorted by net P&L, best first). If NOTHING produced
+    a trade, says so plainly instead of dumping every zero row.
+    """
+    total = len(results_by_key)
+    with_trades = {k: m for k, m in results_by_key.items() if m["num_trades"] > 0}
+    zero_trades = total - len(with_trades)
+
+    lines = [f"Tested {total} combinations (strategy x index x timeframe x EMA)."]
+    lines.append(f"{len(with_trades)} had at least one trade, {zero_trades} had zero trades.")
+    lines.append("")
+
+    if not with_trades:
+        lines.append(
+            "No combination produced any trade at all. This usually means the "
+            "signal-quality filters (or regime filter) were never satisfied in "
+            "this data window -- check the GitHub Actions log for the full table, "
+            "or loosen config.MIN_SIGNAL_SCORE / test a longer data window."
+        )
+        return "\n".join(lines)
+
+    sorted_items = sorted(with_trades.items(), key=lambda kv: kv[1]["net_pnl"], reverse=True)
+    lines.append(f"Top {min(max_rows, len(sorted_items))} by net P&L:")
+    for (strategy, index_name, tf), m in sorted_items[:max_rows]:
+        pf = m["profit_factor"]
+        pf_str = f"{pf:.2f}" if isinstance(pf, (int, float)) else "N/A"
+        lines.append(
+            f"• {strategy} | {index_name} {tf}m — {m['num_trades']} trades, "
+            f"{m['win_rate']:.0f}% win, PF {pf_str}, net Rs{m['net_pnl']:.0f}"
+        )
+
+    if len(sorted_items) > max_rows:
+        lines.append(f"... and {len(sorted_items) - max_rows} more (see GitHub Actions log for the full table).")
+
+    return "\n".join(lines)
 
 
 def is_robust(metrics_in_sample: dict, metrics_out_of_sample: dict,

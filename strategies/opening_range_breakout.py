@@ -48,7 +48,11 @@ class OpeningRangeBreakout(Strategy):
         prev_close = prev_row["close"]
         volume = row["volume"]
 
-        volume_confirmed = volume > avg_vol * self.volume_mult
+        # NSE index tickers report volume=0 from Yahoo Finance (indices aren't
+        # tradeable instruments). When that's the case for this bar's average,
+        # we can't meaningfully confirm a breakout via volume, so we treat the
+        # volume check as passed rather than always failing it.
+        volume_confirmed = (avg_vol == 0) or (volume > avg_vol * self.volume_mult)
 
         # Require the breakout to hold: previous bar's close was already beyond
         # the range too (avoids single-candle spike reversals), i.e. two
