@@ -62,22 +62,29 @@ class PositionSizeResult:
     rejection_reason: Optional[str] = None
 
 
-def compute_position_size(entry_price: float, lot_size: int, available_capital: float
+def compute_position_size(entry_price: float, lot_size: int, available_capital: float,
+                           stop_loss_pct: float = None, target_pct: float = None
                            ) -> PositionSizeResult:
     """
     Sizing logic:
     - risk_amount = available_capital * RISK_PER_TRADE_PCT
-    - stop_loss defined as STOP_LOSS_PCT_OF_PREMIUM below entry premium
-    - per-unit risk = entry_price * STOP_LOSS_PCT_OF_PREMIUM
+    - stop_loss defined as stop_loss_pct (default config.STOP_LOSS_PCT_OF_PREMIUM) below entry premium
+    - per-unit risk = entry_price * stop_loss_pct
     - quantity (in units) = risk_amount / per_unit_risk, rounded DOWN to whole lots
     - capped so capital deployed never exceeds MAX_CAPITAL_DEPLOY_PCT of capital
+
+    stop_loss_pct / target_pct: optional overrides (e.g. for scalping strategies
+    that intentionally use a tighter SL/target than the system default).
     """
+    sl_pct = stop_loss_pct if stop_loss_pct is not None else config.STOP_LOSS_PCT_OF_PREMIUM
+    tgt_pct = target_pct if target_pct is not None else config.TARGET_PCT_OF_PREMIUM
+
     if entry_price <= 0 or lot_size <= 0:
         return PositionSizeResult(0, 0, 0, 0, 0, 0, rejected=True,
                                    rejection_reason="Invalid entry price or lot size")
 
     risk_amount = available_capital * config.RISK_PER_TRADE_PCT
-    per_unit_risk = entry_price * config.STOP_LOSS_PCT_OF_PREMIUM
+    per_unit_risk = entry_price * sl_pct
 
     if per_unit_risk <= 0:
         return PositionSizeResult(0, 0, 0, 0, 0, 0, rejected=True,
@@ -102,10 +109,10 @@ def compute_position_size(entry_price: float, lot_size: int, available_capital: 
     capital_used = round(entry_price * quantity, 2)
     actual_risk = round(per_unit_risk * quantity, 2)
 
-    stop_loss_price = round(entry_price * (1 - config.STOP_LOSS_PCT_OF_PREMIUM), 2)
-    target_price = round(entry_price * (1 + config.TARGET_PCT_OF_PREMIUM), 2)
+    stop_loss_price = round(entry_price * (1 - sl_pct), 2)
+    target_price = round(entry_price * (1 + tgt_pct), 2)
 
-    risk_reward = config.TARGET_PCT_OF_PREMIUM / config.STOP_LOSS_PCT_OF_PREMIUM
+    risk_reward = tgt_pct / sl_pct
     if risk_reward < config.MIN_RISK_REWARD_RATIO:
         return PositionSizeResult(0, 0, 0, 0, 0, 0, rejected=True,
                                    rejection_reason=(

@@ -96,6 +96,47 @@ def bollinger_bands(series: pd.Series, window: int = 20, num_std: float = 2.0):
     return upper, mid, lower
 
 
+def nadaraya_watson_envelope(series: pd.Series, bandwidth: float = 8.0, window: int = 120, mult: float = 2.5):
+    """
+    Causal (non-repainting) Nadaraya-Watson kernel-regression envelope.
+
+    This is a smoother, more adaptive alternative to a simple moving average
+    for identifying dynamic support/resistance "zones". At each bar, only
+    bars up to and including that bar are used (never future bars), so this
+    is safe for backtesting without look-ahead bias -- unlike many popular
+    NW-envelope implementations (e.g. on TradingView) which use the whole
+    dataset and "repaint" historical values as new bars arrive.
+
+    bandwidth: controls how smooth the curve is (larger = smoother/slower).
+    window: how many trailing bars feed into each point's estimate (larger
+            = slower to compute, marginally smoother edges).
+    mult: how many mean-absolute-deviations wide the upper/lower bands are.
+
+    Returns (nw_mean, upper_band, lower_band) as pd.Series.
+    """
+    values = series.values.astype(float)
+    n = len(values)
+    nw = np.full(n, np.nan)
+
+    for i in range(n):
+        start = max(0, i - window + 1)
+        span = i - start + 1
+        # Gaussian kernel weights: distance 0 (current bar) gets weight 1,
+        # older bars in the window get exponentially less weight.
+        distances = np.arange(span - 1, -1, -1)
+        weights = np.exp(-(distances ** 2) / (2 * bandwidth ** 2))
+        weights /= weights.sum()
+        nw[i] = np.dot(weights, values[start:i + 1])
+
+    nw_series = pd.Series(nw, index=series.index)
+    residual = (series - nw_series).abs()
+    mad = residual.rolling(window=window, min_periods=5).mean()
+
+    upper = nw_series + mult * mad
+    lower = nw_series - mult * mad
+    return nw_series, upper, lower
+
+
 def is_bullish_candle(df: pd.DataFrame) -> pd.Series:
     return df["close"] > df["open"]
 

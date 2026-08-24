@@ -33,6 +33,7 @@ from strategies.vwap_ema_momentum import VwapEmaMomentum
 from strategies.opening_range_breakout import OpeningRangeBreakout
 from strategies.trend_pullback import TrendPullback
 from strategies.mean_reversion import MeanReversion
+from strategies.trend_scalp_nw import TrendScalpNW
 from paper_trading.engine import PaperTradingEngine
 from notify import telegram
 
@@ -89,6 +90,8 @@ def build_strategy_set():
         strategies.append(TrendPullback())
     if config.ENABLED_STRATEGIES.get("mean_reversion"):
         strategies.append(MeanReversion())
+    if config.ENABLED_STRATEGIES.get("trend_scalp_nw"):
+        strategies.append(TrendScalpNW())
     return strategies
 
 
@@ -119,6 +122,7 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         (lambda: [OpeningRangeBreakout()], "opening_range_breakout"),
         (lambda: [TrendPullback()], "trend_pullback"),
         (lambda: [MeanReversion()], "mean_reversion"),
+        (lambda: [TrendScalpNW()], "trend_scalp_nw"),
     ]
 
     for index_name in instruments:

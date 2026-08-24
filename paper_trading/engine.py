@@ -150,7 +150,10 @@ class PaperTradingEngine:
                 })
                 continue
 
-            sizing = compute_position_size(contract.ltp, contract.lot_size, self.capital)
+            sizing = compute_position_size(
+                contract.ltp, contract.lot_size, self.capital,
+                stop_loss_pct=sig.stop_loss_pct, target_pct=sig.target_pct,
+            )
             if sizing.rejected:
                 database.insert_rejected_signal({
                     "mode": "paper_live", "index_name": self.index_name, "strategy": strat.name,

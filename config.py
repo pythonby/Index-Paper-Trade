@@ -105,6 +105,7 @@ ENABLED_STRATEGIES = {
     "opening_range_breakout": True,
     "trend_pullback": True,
     "mean_reversion": True,       # Strategy D -- sideways/range-bound markets only
+    "trend_scalp_nw": True,       # Strategy E -- trend-only scalping using Nadaraya-Watson zones
 }
 
 EMA_FAST_CANDIDATES = [5, 8, 9]
@@ -115,6 +116,17 @@ BOLLINGER_WINDOW = 20
 BOLLINGER_STD = 2.0
 MEAN_REVERSION_RSI_OVERSOLD = 35
 MEAN_REVERSION_RSI_OVERBOUGHT = 65
+
+# Nadaraya-Watson envelope settings (used by trend_scalp_nw)
+NW_BANDWIDTH = 8.0
+NW_WINDOW = 120
+NW_MULT = 2.5
+
+# Scalping strategies intentionally use a tighter stop/target than the
+# system default (STOP_LOSS_PCT_OF_PREMIUM / TARGET_PCT_OF_PREMIUM above),
+# aiming for quick small moves rather than a large single target.
+SCALP_STOP_LOSS_PCT = 0.12     # 12% loss on premium
+SCALP_TARGET_PCT = 0.20        # 20% gain on premium (still >= MIN_RISK_REWARD_RATIO)
 
 # Which timeframes to test in "python main.py backtest". Testing all 6 is
 # thorough but slow (many more combinations); trim this list if a full run

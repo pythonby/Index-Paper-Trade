@@ -19,7 +19,7 @@ from typing import List, Optional
 import pandas as pd
 
 import config
-from indicators import ema, vwap, atr, rsi, volume_avg, realized_volatility, opening_range, bollinger_bands
+from indicators import ema, vwap, atr, rsi, volume_avg, realized_volatility, opening_range, bollinger_bands, nadaraya_watson_envelope
 from options.selector import select_backtest_contract
 from regime.detector import classify_regime
 from signal.scorer import score_signal
@@ -75,6 +75,13 @@ def prepare_dataframe(df: pd.DataFrame, ema_fast: int, ema_slow: int,
     df["bb_upper"] = bb_upper
     df["bb_mid"] = bb_mid
     df["bb_lower"] = bb_lower
+
+    nw_mean, nw_upper, nw_lower = nadaraya_watson_envelope(
+        df["close"], config.NW_BANDWIDTH, config.NW_WINDOW, config.NW_MULT
+    )
+    df["nw_mean"] = nw_mean
+    df["nw_upper"] = nw_upper
+    df["nw_lower"] = nw_lower
     return df
 
 
@@ -250,7 +257,10 @@ def run_backtest(df: pd.DataFrame, index_name: str, strategies: list,
                 })
                 continue
 
-            sizing = compute_position_size(contract.ltp, contract.lot_size, capital)
+            sizing = compute_position_size(
+                contract.ltp, contract.lot_size, capital,
+                stop_loss_pct=sig.stop_loss_pct, target_pct=sig.target_pct,
+            )
             if sizing.rejected:
                 result.rejected_signals.append({
                     "mode": mode_label, "index_name": index_name, "strategy": strat.name,

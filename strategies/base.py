@@ -18,6 +18,8 @@ class Signal:
     direction: str          # "CE" or "PE"
     reasons: list
     score_components: dict  # raw component values feeding the signal scorer
+    stop_loss_pct: float = None   # optional override of config.STOP_LOSS_PCT_OF_PREMIUM
+    target_pct: float = None      # optional override of config.TARGET_PCT_OF_PREMIUM
 
 
 class Strategy:
