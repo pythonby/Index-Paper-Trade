@@ -20,6 +20,7 @@ import pandas as pd
 
 import config
 from indicators import ema, vwap, atr, rsi, volume_avg, realized_volatility, opening_range, bollinger_bands, nadaraya_watson_envelope
+from indicators.smc import order_blocks, fair_value_gaps
 from options.selector import select_backtest_contract
 from regime.detector import classify_regime
 from signal.scorer import score_signal
@@ -82,6 +83,18 @@ def prepare_dataframe(df: pd.DataFrame, ema_fast: int, ema_slow: int,
     df["nw_mean"] = nw_mean
     df["nw_upper"] = nw_upper
     df["nw_lower"] = nw_lower
+
+    bull_ob_low, bull_ob_high, bear_ob_low, bear_ob_high = order_blocks(df)
+    df["bull_ob_low"] = bull_ob_low
+    df["bull_ob_high"] = bull_ob_high
+    df["bear_ob_low"] = bear_ob_low
+    df["bear_ob_high"] = bear_ob_high
+
+    bull_fvg_low, bull_fvg_high, bear_fvg_low, bear_fvg_high = fair_value_gaps(df)
+    df["bull_fvg_low"] = bull_fvg_low
+    df["bull_fvg_high"] = bull_fvg_high
+    df["bear_fvg_low"] = bear_fvg_low
+    df["bear_fvg_high"] = bear_fvg_high
     return df
 
 

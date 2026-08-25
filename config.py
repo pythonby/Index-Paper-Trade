@@ -106,7 +106,13 @@ ENABLED_STRATEGIES = {
     "trend_pullback": True,
     "mean_reversion": True,       # Strategy D -- sideways/range-bound markets only
     "trend_scalp_nw": True,       # Strategy E -- trend-only scalping using Nadaraya-Watson zones
+    "smc_zone_entry": True,       # Strategy F -- SMC order blocks + fair value gaps
 }
+
+# SMC zones (order blocks, fair value gaps) are only meaningful on 15-min+
+# charts -- on 1m/5m they tend to be noisy. This strategy is skipped for
+# any timeframe below this threshold.
+SMC_MIN_TIMEFRAME_MIN = 15
 
 EMA_FAST_CANDIDATES = [5, 8, 9]
 EMA_SLOW_CANDIDATES = [13, 21, 26]

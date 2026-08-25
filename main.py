@@ -34,6 +34,7 @@ from strategies.opening_range_breakout import OpeningRangeBreakout
 from strategies.trend_pullback import TrendPullback
 from strategies.mean_reversion import MeanReversion
 from strategies.trend_scalp_nw import TrendScalpNW
+from strategies.smc_zone_entry import SMCZoneEntry
 from paper_trading.engine import PaperTradingEngine
 from notify import telegram
 
@@ -80,7 +81,13 @@ def print_first_run_status():
     print("=" * 70)
 
 
-def build_strategy_set():
+def build_strategy_set(timeframe_min: int = None):
+    """
+    timeframe_min: if provided, strategies that are restricted to certain
+    timeframes (e.g. SMC zones, which need 15min+) are only included when
+    appropriate. Pass None to get every enabled strategy regardless of
+    timeframe (used by generic/status contexts).
+    """
     strategies = []
     if config.ENABLED_STRATEGIES.get("vwap_ema_momentum"):
         strategies.append(VwapEmaMomentum())
@@ -92,6 +99,9 @@ def build_strategy_set():
         strategies.append(MeanReversion())
     if config.ENABLED_STRATEGIES.get("trend_scalp_nw"):
         strategies.append(TrendScalpNW())
+    if config.ENABLED_STRATEGIES.get("smc_zone_entry"):
+        if timeframe_min is None or timeframe_min >= config.SMC_MIN_TIMEFRAME_MIN:
+            strategies.append(SMCZoneEntry())
     return strategies
 
 
@@ -123,6 +133,7 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         (lambda: [TrendPullback()], "trend_pullback"),
         (lambda: [MeanReversion()], "mean_reversion"),
         (lambda: [TrendScalpNW()], "trend_scalp_nw"),
+        (lambda: [SMCZoneEntry()], "smc_zone_entry"),
     ]
 
     for index_name in instruments:
@@ -150,6 +161,8 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
                     for strat_builder, strat_name in strategy_registry:
                         if not config.ENABLED_STRATEGIES.get(strat_name):
                             continue
+                        if strat_name == "smc_zone_entry" and timeframe_min < config.SMC_MIN_TIMEFRAME_MIN:
+                            continue  # SMC zones only tested on 15min+ (see config.SMC_MIN_TIMEFRAME_MIN)
 
                         folds = rolling_walk_forward(df, index_name, strat_builder, timeframe_min)
                         fold_summary = summarize_folds(folds)
@@ -196,9 +209,41 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         logging.getLogger("main").warning("Could not send backtest summary to Telegram (still printed above/in logs).")
 
 
+def _compute_and_send_period_report(period_label: str, trades: list):
+    """Shared helper: computes equity/drawdown for a list of trades and
+    sends the Telegram report. Used by both the per-timeframe daily report
+    and the weekly/monthly reports below."""
+    running = config.STARTING_CAPITAL
+    peak = running
+    max_dd = 0.0
+    strategy_pnls = {}
+    for t in trades:
+        running += t["net_pnl"]
+        peak = max(peak, running)
+        max_dd = max(max_dd, peak - running)
+        strategy_pnls[t["strategy"]] = strategy_pnls.get(t["strategy"], 0.0) + t["net_pnl"]
+
+    report_text = format_period_report(
+        period_label,
+        starting_capital=config.STARTING_CAPITAL,
+        ending_capital=round(running, 2),
+        trades=trades,
+        max_drawdown=round(max_dd, 2),
+        strategy_pnls=strategy_pnls,
+    )
+    print(report_text)
+    try:
+        telegram.send_daily_report(report_text)
+    except telegram.TelegramError:
+        logging.getLogger("main").warning(f"Could not send {period_label} report to Telegram (logged locally instead).")
+
+
 def _send_end_of_day_report():
-    """Pulls today's paper trades from the DB and sends the daily Telegram report.
-    Called both on square-off and on graceful shutdown."""
+    """Pulls today's paper trades from the DB and sends a SEPARATE Telegram
+    report per timeframe (never mixed together) -- e.g. a 5m report and a
+    15m report are two distinct messages, each showing only that
+    timeframe's own trades/P&L. Called both on square-off and on graceful
+    shutdown."""
     import datetime as _dt
     today_str = _dt.date.today().isoformat()
     all_trades = database.fetch_trades(mode="paper_live")
@@ -208,28 +253,13 @@ def _send_end_of_day_report():
         print("No trades were taken today; skipping daily report.")
         return
 
-    running = config.STARTING_CAPITAL
-    peak = running
-    max_dd = 0.0
-    strategy_pnls = {}
+    by_timeframe = {}
     for t in todays_trades:
-        running += t["net_pnl"]
-        peak = max(peak, running)
-        max_dd = max(max_dd, peak - running)
-        strategy_pnls[t["strategy"]] = strategy_pnls.get(t["strategy"], 0.0) + t["net_pnl"]
+        tf = t.get("timeframe_min", "?")
+        by_timeframe.setdefault(tf, []).append(t)
 
-    report_text = format_daily_report(
-        starting_capital=config.STARTING_CAPITAL,
-        ending_capital=round(running, 2),
-        trades=todays_trades,
-        max_drawdown=round(max_dd, 2),
-        strategy_pnls=strategy_pnls,
-    )
-    print(report_text)
-    try:
-        telegram.send_daily_report(report_text)
-    except telegram.TelegramError:
-        logging.getLogger("main").warning("Could not send daily report to Telegram (logged locally instead).")
+    for tf, trades in sorted(by_timeframe.items(), key=lambda kv: (kv[0] is None, kv[0])):
+        _compute_and_send_period_report(f"DAILY ({tf}m)", trades)
 
     _maybe_send_weekly_report()
     _maybe_send_monthly_report()
@@ -242,7 +272,8 @@ def _entry_date(trade: dict):
 
 def _send_period_report(period_label: str, start_date, end_date):
     """Aggregates all paper trades in [start_date, end_date] (inclusive) and
-    sends a Telegram summary. Used for weekly and monthly reports."""
+    sends a SEPARATE Telegram summary per timeframe. Used for weekly and
+    monthly reports."""
     all_trades = database.fetch_trades(mode="paper_live")
     period_trades = []
     for t in all_trades:
@@ -257,29 +288,13 @@ def _send_period_report(period_label: str, start_date, end_date):
         print(f"No trades found for {period_label} period ({start_date} to {end_date}); skipping report.")
         return
 
-    running = config.STARTING_CAPITAL
-    peak = running
-    max_dd = 0.0
-    strategy_pnls = {}
+    by_timeframe = {}
     for t in period_trades:
-        running += t["net_pnl"]
-        peak = max(peak, running)
-        max_dd = max(max_dd, peak - running)
-        strategy_pnls[t["strategy"]] = strategy_pnls.get(t["strategy"], 0.0) + t["net_pnl"]
+        tf = t.get("timeframe_min", "?")
+        by_timeframe.setdefault(tf, []).append(t)
 
-    report_text = format_period_report(
-        period_label,
-        starting_capital=config.STARTING_CAPITAL,
-        ending_capital=round(running, 2),
-        trades=period_trades,
-        max_drawdown=round(max_dd, 2),
-        strategy_pnls=strategy_pnls,
-    )
-    print(report_text)
-    try:
-        telegram.send_daily_report(report_text)  # reuses the same sender, header text already says WEEKLY/MONTHLY
-    except telegram.TelegramError:
-        logging.getLogger("main").warning(f"Could not send {period_label} report to Telegram (logged locally instead).")
+    for tf, trades in sorted(by_timeframe.items(), key=lambda kv: (kv[0] is None, kv[0])):
+        _compute_and_send_period_report(f"{period_label} ({tf}m)", trades)
 
 
 def _maybe_send_weekly_report():
@@ -347,7 +362,7 @@ def run_paper_trading_mode(timeframe_arg: str = None, index_arg: str = None):
     engines = []
     for index_name in instruments_to_run:
         for tf in timeframes_to_run:
-            strategies = build_strategy_set()
+            strategies = build_strategy_set(tf)
             engines.append(PaperTradingEngine(index_name, strategies, tf))
 
     print(f"\nStarting live paper-trading loop for {len(engines)} engine(s) "

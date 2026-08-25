@@ -54,25 +54,38 @@ class TrendScalpNW(Strategy):
         low = row["low"]
         high = row["high"]
         prev_close = prev_row["close"]
+        prev_low = prev_row["low"]
+        prev_high = prev_row["high"]
 
-        uptrend = ema_fast > ema_slow and close > nw_mean
-        downtrend = ema_fast < ema_slow and close < nw_mean
+        # Trend filter uses EMA alignment only (not "close vs NW mean") -- during
+        # a genuine pullback to the zone, price often dips slightly below the NW
+        # mean line too, which would have wrongly disqualified real setups.
+        uptrend = ema_fast > ema_slow
+        downtrend = ema_fast < ema_slow
 
         if not uptrend and not downtrend:
             return None  # sideways / unclear -- this strategy only trades established trends
 
-        # "Zone" = price touching or dipping into the NW band, not just any pullback
-        in_lower_zone = low <= nw_lower * (1 + self.zone_tolerance_pct)
-        in_upper_zone = high >= nw_upper * (1 - self.zone_tolerance_pct)
+        # "Zone" = price touching or dipping into the NW band. IMPORTANT: the
+        # bar that touches the zone is usually itself a down/bearish candle
+        # (that's how it got there) -- the confirmation candle is typically
+        # the NEXT bar. So we check if EITHER this bar or the previous bar
+        # touched the zone, with the current bar acting as confirmation.
+        touched_lower_zone = (low <= nw_lower * (1 + self.zone_tolerance_pct) or
+                               prev_low <= nw_lower * (1 + self.zone_tolerance_pct))
+        touched_upper_zone = (high >= nw_upper * (1 - self.zone_tolerance_pct) or
+                               prev_high >= nw_upper * (1 - self.zone_tolerance_pct))
 
-        bullish_confirm = close > open_ and close > prev_close
-        bearish_confirm = close < open_ and close < prev_close
+        # Confirmation: bullish candle that closes back above the lower zone
+        # (recovering), or bearish candle closing back below the upper zone.
+        bullish_confirm = close > open_ and close > prev_close and close > nw_lower
+        bearish_confirm = close < open_ and close < prev_close and close < nw_upper
 
-        if uptrend and in_lower_zone and bullish_confirm:
+        if uptrend and touched_lower_zone and bullish_confirm:
             reasons = [
-                "Uptrend confirmed (EMA fast > slow, price above NW mean line)",
-                f"Price dipped into the Nadaraya-Watson lower zone ({nw_lower:.1f}) -- dynamic support",
-                "Bullish confirmation candle resuming the trend (scalp entry)",
+                "Uptrend confirmed (EMA fast > slow)",
+                f"Price touched the Nadaraya-Watson lower zone ({nw_lower:.1f}) -- dynamic support",
+                "Bullish confirmation candle recovering above the zone (scalp entry)",
                 f"Tight scalp stop/target: {config.SCALP_STOP_LOSS_PCT*100:.0f}% / {config.SCALP_TARGET_PCT*100:.0f}%",
             ]
             band_width = max(nw_upper - nw_lower, 1e-6)
@@ -91,10 +104,10 @@ class TrendScalpNW(Strategy):
                 target_pct=config.SCALP_TARGET_PCT,
             )
 
-        if downtrend and in_upper_zone and bearish_confirm:
+        if downtrend and touched_upper_zone and bearish_confirm:
             reasons = [
-                "Downtrend confirmed (EMA fast < slow, price below NW mean line)",
-                f"Price rallied into the Nadaraya-Watson upper zone ({nw_upper:.1f}) -- dynamic resistance",
+                "Downtrend confirmed (EMA fast < slow)",
+                f"Price touched the Nadaraya-Watson upper zone ({nw_upper:.1f}) -- dynamic resistance",
                 "Bearish confirmation candle resuming the trend (scalp entry)",
                 f"Tight scalp stop/target: {config.SCALP_STOP_LOSS_PCT*100:.0f}% / {config.SCALP_TARGET_PCT*100:.0f}%",
             ]
