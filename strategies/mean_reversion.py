@@ -21,6 +21,8 @@ from strategies.base import Strategy, Signal
 class MeanReversion(Strategy):
     name = "mean_reversion"
     preferred_regimes = {"sideways"}   # the ONLY strategy that wants sideways markets
+    market_type = "sideways"
+    speed = "slow"
 
     def __init__(self, rsi_oversold: float = 35, rsi_overbought: float = 65):
         self.rsi_oversold = rsi_oversold

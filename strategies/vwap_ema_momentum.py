@@ -16,6 +16,8 @@ from strategies.base import Strategy, Signal
 class VwapEmaMomentum(Strategy):
     name = "vwap_ema_momentum"
     preferred_regimes = {"strong_bullish", "strong_bearish"}
+    market_type = "trending"
+    speed = "any"
 
     def __init__(self, ema_fast_col="ema_fast", ema_slow_col="ema_slow",
                  swing_lookback: int = 10):

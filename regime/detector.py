@@ -21,9 +21,46 @@ class RegimeState:
     volatility_regime: str   # "high_volatility" | "low_volatility" | "normal"
 
     def allows(self, preferred_regimes: set) -> bool:
+        """SOFT check -- used only for the signal SCORE (regime_fit component),
+        not for strict on/off gating. See strategy_allowed() for the strict gate."""
         if not preferred_regimes:
             return True
         return self.trend_regime in preferred_regimes or self.volatility_regime in preferred_regimes
+
+    def strategy_allowed(self, strategy) -> bool:
+        """
+        STRICT gate: a strategy is only allowed to fire at all if its
+        market_type and speed classification match the CURRENT regime.
+        This is a hard AND of both axes -- e.g. a "trending + fast"
+        strategy is blocked unless the market is BOTH trending AND
+        high-volatility right now. "any" on either axis means no
+        restriction on that axis.
+
+        market_type:
+            "trending" -> requires trend_regime in {strong_bullish, strong_bearish}
+            "sideways" -> requires trend_regime == "sideways"
+            "any"      -> no restriction (e.g. rsi_adx_nw self-selects internally)
+
+        speed:
+            "slow" -> blocked when volatility_regime == "high_volatility"
+            "fast" -> blocked when volatility_regime == "low_volatility"
+            "any"  -> no restriction (both "normal" volatility bars are
+                      compatible with either slow or fast strategies)
+        """
+        market_type = getattr(strategy, "market_type", "any")
+        speed = getattr(strategy, "speed", "any")
+
+        if market_type == "trending" and self.trend_regime not in ("strong_bullish", "strong_bearish"):
+            return False
+        if market_type == "sideways" and self.trend_regime != "sideways":
+            return False
+
+        if speed == "slow" and self.volatility_regime == "high_volatility":
+            return False
+        if speed == "fast" and self.volatility_regime == "low_volatility":
+            return False
+
+        return True
 
 
 def classify_regime(df, i: int, adx_threshold: float = 22.0,

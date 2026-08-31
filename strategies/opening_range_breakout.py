@@ -16,6 +16,8 @@ from strategies.base import Strategy, Signal
 class OpeningRangeBreakout(Strategy):
     name = "opening_range_breakout"
     preferred_regimes = {"strong_bullish", "strong_bearish", "high_volatility"}
+    market_type = "trending"
+    speed = "fast"
 
     def __init__(self, range_minutes: int = 15, volume_mult: float = 1.2):
         self.range_minutes = range_minutes

@@ -107,6 +107,13 @@ ENABLED_STRATEGIES = {
     "mean_reversion": True,       # Strategy D -- sideways/range-bound markets only
     "trend_scalp_nw": True,       # Strategy E -- trend-only scalping using Nadaraya-Watson zones
     "smc_zone_entry": True,       # Strategy F -- SMC order blocks + fair value gaps
+    "combo_trend_vwap": True,     # Combo 1: Trend Pullback + VWAP Momentum (must both agree)
+    "rsi_adx_nw": True,           # Combo 4: RSI+ADX (trending) / Nadaraya-Watson zone (sideways)
+    "rsi_psar_reversal": True,    # Combo 5: RSI + Parabolic SAR reversal
+    "supertrend_rsi": True,       # Combo 6: SuperTrend + RSI
+    "combo_smc_nw": True,         # Combo 7: SMC Zone + Nadaraya-Watson (must both agree)
+    "ema_price_action": True,     # Combo 8: EMA + candlestick price action
+    "trendline_rsi": True,        # Combo 9: Trendlines + RSI
 }
 
 # SMC zones (order blocks, fair value gaps) are only meaningful on 15-min+

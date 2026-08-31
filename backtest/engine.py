@@ -19,7 +19,11 @@ from typing import List, Optional
 import pandas as pd
 
 import config
-from indicators import ema, vwap, atr, rsi, volume_avg, realized_volatility, opening_range, bollinger_bands, nadaraya_watson_envelope
+from indicators import (
+    ema, vwap, atr, rsi, volume_avg, realized_volatility, opening_range, bollinger_bands,
+    nadaraya_watson_envelope, adx, parabolic_sar, supertrend,
+    is_bullish_engulfing, is_bearish_engulfing, is_hammer, is_shooting_star, swing_points,
+)
 from indicators.smc import order_blocks, fair_value_gaps
 from options.selector import select_backtest_contract
 from regime.detector import classify_regime
@@ -95,6 +99,30 @@ def prepare_dataframe(df: pd.DataFrame, ema_fast: int, ema_slow: int,
     df["bull_fvg_high"] = bull_fvg_high
     df["bear_fvg_low"] = bear_fvg_low
     df["bear_fvg_high"] = bear_fvg_high
+
+    adx_, plus_di, minus_di = adx(df)
+    df["adx"] = adx_
+    df["plus_di"] = plus_di
+    df["minus_di"] = minus_di
+
+    psar, psar_trend = parabolic_sar(df)
+    df["psar"] = psar
+    df["psar_trend"] = psar_trend
+
+    st, st_dir = supertrend(df)
+    df["supertrend"] = st
+    df["supertrend_dir"] = st_dir
+
+    df["bullish_engulfing"] = is_bullish_engulfing(df)
+    df["bearish_engulfing"] = is_bearish_engulfing(df)
+    df["hammer"] = is_hammer(df)
+    df["shooting_star"] = is_shooting_star(df)
+
+    swl, swla, swh, swha = swing_points(df)
+    df["swing_low_val"] = swl
+    df["swing_low_age"] = swla
+    df["swing_high_val"] = swh
+    df["swing_high_age"] = swha
     return df
 
 
@@ -234,6 +262,13 @@ def run_backtest(df: pd.DataFrame, index_name: str, strategies: list,
         regime = classify_regime(df, i)
 
         for strat in strategies:
+            # STRICT gate: skip this strategy entirely if the current regime
+            # (trend + volatility) doesn't match its market_type/speed
+            # classification -- e.g. a "trending+fast" strategy never even
+            # gets a chance to fire during a sideways/low-volatility bar.
+            if not regime.strategy_allowed(strat):
+                continue
+
             sig = strat.generate_signal(df, i)
             if sig is None:
                 continue

@@ -18,6 +18,7 @@ from typing import Optional
 import pandas as pd
 
 import config
+from utils.timeutils import now_ist, today_ist
 from data.fetcher import fetch_index_history, fetch_live_option_chain, DataFeedError, is_data_stale
 from backtest.engine import prepare_dataframe, next_weekly_expiry
 from options.selector import select_live_contract
@@ -39,7 +40,7 @@ _alerted_today: dict = {}  # index_name -> date already alerted
 
 
 def _should_send_alert(index_name: str) -> bool:
-    today = dt.date.today()
+    today = today_ist()
     if _alerted_today.get(index_name) == today:
         return False
     _alerted_today[index_name] = today
@@ -58,7 +59,7 @@ class PaperTradingEngine:
         self.halted = False
 
     def _refresh_daily_state(self):
-        today = dt.date.today()
+        today = today_ist()
         if self.risk_state is None or self.risk_state.trading_date != today:
             self.risk_state = DailyRiskState(
                 trading_date=today, starting_capital=self.capital, current_capital=self.capital
@@ -81,7 +82,7 @@ class PaperTradingEngine:
         Call this on a schedule (e.g. every 30-60s) during market hours."""
         self._refresh_daily_state()
 
-        now = dt.datetime.now()
+        now = now_ist()
         if not (config.MARKET_OPEN_TIME <= now.time() <= config.MARKET_CLOSE_TIME):
             logger.info("Market closed; skipping poll.")
             return
@@ -123,6 +124,11 @@ class PaperTradingEngine:
         regime = classify_regime(df, i)
 
         for strat in self.strategies:
+            # STRICT gate: same as backtest engine -- completely skip this
+            # strategy if the current regime doesn't match its market_type/speed.
+            if not regime.strategy_allowed(strat):
+                continue
+
             sig = strat.generate_signal(df, i)
             if sig is None:
                 continue
@@ -221,7 +227,7 @@ class PaperTradingEngine:
                                          self.open_position["peak_price"])
             self.open_position["stop_loss"] = stop
 
-        now = dt.datetime.now()
+        now = now_ist()
         exit_reason = None
         if current_price <= stop:
             exit_reason = "Stop-loss hit"
@@ -274,4 +280,4 @@ class PaperTradingEngine:
                 price = contract.ltp if contract else self.open_position["entry_execution_price"]
             except DataFeedError:
                 price = self.open_position["entry_execution_price"]
-            self._close_position(price, reason, dt.datetime.now())
+            self._close_position(price, reason, now_ist())

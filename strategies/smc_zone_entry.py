@@ -21,6 +21,8 @@ from strategies.base import Strategy, Signal
 class SMCZoneEntry(Strategy):
     name = "smc_zone_entry"
     preferred_regimes = {"strong_bullish", "strong_bearish"}
+    market_type = "trending"
+    speed = "any"
 
     def __init__(self, zone_tolerance_pct: float = 0.0008, fvg_lookback: int = 20):
         self.zone_tolerance_pct = zone_tolerance_pct

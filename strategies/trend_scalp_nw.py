@@ -28,6 +28,8 @@ import config
 class TrendScalpNW(Strategy):
     name = "trend_scalp_nw"
     preferred_regimes = {"strong_bullish", "strong_bearish"}   # trend-only, never counter-trend
+    market_type = "trending"
+    speed = "fast"
 
     def __init__(self, zone_tolerance_pct: float = 0.0012):
         # how close price must get to the NW band to count as "in the zone"

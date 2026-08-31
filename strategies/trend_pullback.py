@@ -15,6 +15,8 @@ from strategies.base import Strategy, Signal
 class TrendPullback(Strategy):
     name = "trend_pullback"
     preferred_regimes = {"strong_bullish", "strong_bearish"}
+    market_type = "trending"
+    speed = "slow"
 
     def __init__(self, pullback_tolerance_pct: float = 0.0015):
         # how close price must come to VWAP/EMA to count as a "pullback"

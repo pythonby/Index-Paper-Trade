@@ -137,6 +137,380 @@ def nadaraya_watson_envelope(series: pd.Series, bandwidth: float = 8.0, window: 
     return nw_series, upper, lower
 
 
+def adx(df: pd.DataFrame, period: int = 14):
+    """
+    Average Directional Index (Wilder's method) -- measures TREND STRENGTH
+    (not direction). Returns (adx, plus_di, minus_di). ADX > ~25 is
+    generally considered "trending"; below that, "weak/no trend".
+    Deliberately paired with slower trend indicators (EMA, SuperTrend)
+    rather than fast oscillators, since ADX itself changes slowly.
+    """
+    high, low, close = df["high"], df["low"], df["close"]
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    tr = pd.concat([
+        (high - low),
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+
+    atr_smooth = tr.ewm(alpha=1 / period, adjust=False).mean()
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr_smooth.replace(0, np.nan)
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr_smooth.replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx_ = dx.ewm(alpha=1 / period, adjust=False).mean()
+    return adx_, plus_di, minus_di
+
+
+def parabolic_sar(df: pd.DataFrame, af_step: float = 0.02, af_max: float = 0.2):
+    """
+    Classic Parabolic SAR -- a fast-flipping trend/reversal indicator (the
+    dot flips above/below price when the trend reverses). Paired with RSI
+    (also fast-reacting) for reversal-confirmation strategies, since both
+    react on a similar bar-to-bar timescale -- pairing PSAR with a slow
+    indicator like ADX would rarely have both trigger together.
+
+    Returns (sar, trend) where trend is +1 (bullish, dot below price) or
+    -1 (bearish, dot above price). Causal, single forward pass.
+    """
+    high = df["high"].values
+    low = df["low"].values
+    n = len(df)
+
+    sar = np.zeros(n)
+    trend = np.zeros(n, dtype=int)
+    ep = np.zeros(n)
+    af = np.zeros(n)
+
+    trend[0] = 1
+    sar[0] = low[0]
+    ep[0] = high[0]
+    af[0] = af_step
+
+    for i in range(1, n):
+        prev_sar, prev_trend, prev_ep, prev_af = sar[i - 1], trend[i - 1], ep[i - 1], af[i - 1]
+        candidate_sar = prev_sar + prev_af * (prev_ep - prev_sar)
+
+        if prev_trend == 1:
+            candidate_sar = min(candidate_sar, low[i - 1], low[i - 2] if i >= 2 else low[i - 1])
+            if low[i] < candidate_sar:
+                trend[i], sar[i], ep[i], af[i] = -1, prev_ep, low[i], af_step
+            else:
+                trend[i], sar[i] = 1, candidate_sar
+                if high[i] > prev_ep:
+                    ep[i], af[i] = high[i], min(prev_af + af_step, af_max)
+                else:
+                    ep[i], af[i] = prev_ep, prev_af
+        else:
+            candidate_sar = max(candidate_sar, high[i - 1], high[i - 2] if i >= 2 else high[i - 1])
+            if high[i] > candidate_sar:
+                trend[i], sar[i], ep[i], af[i] = 1, prev_ep, high[i], af_step
+            else:
+                trend[i], sar[i] = -1, candidate_sar
+                if low[i] < prev_ep:
+                    ep[i], af[i] = low[i], min(prev_af + af_step, af_max)
+                else:
+                    ep[i], af[i] = prev_ep, prev_af
+
+    return pd.Series(sar, index=df.index), pd.Series(trend, index=df.index)
+
+
+def supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0):
+    """
+    SuperTrend -- an ATR-based trend-following band that flips direction
+    when price closes through it. Slower/steadier than PSAR, so it's
+    paired with RSI used as a MOMENTUM FILTER (checking RSI is above/below
+    50) rather than RSI extremes, matching SuperTrend's steadier signal
+    frequency instead of RSI's fast oscillation.
+
+    Returns (supertrend_line, direction) where direction is +1 (bullish)
+    or -1 (bearish). Causal, single forward pass.
+    """
+    atr_ = atr(df, period)
+    hl2 = (df["high"] + df["low"]) / 2
+    n = len(df)
+
+    final_upper = (hl2 + multiplier * atr_).values.copy()
+    final_lower = (hl2 - multiplier * atr_).values.copy()
+    close = df["close"].values
+
+    st = np.zeros(n)
+    direction = np.zeros(n, dtype=int)
+
+    first_valid = np.argmax(~np.isnan(final_upper))
+    for i in range(n):
+        if i <= first_valid or np.isnan(final_upper[i]):
+            direction[i] = 1
+            st[i] = final_lower[i] if not np.isnan(final_lower[i]) else close[i]
+            continue
+
+        if not (final_upper[i] < final_upper[i - 1] or close[i - 1] > final_upper[i - 1]):
+            final_upper[i] = final_upper[i - 1]
+        if not (final_lower[i] > final_lower[i - 1] or close[i - 1] < final_lower[i - 1]):
+            final_lower[i] = final_lower[i - 1]
+
+        if st[i - 1] == final_upper[i - 1] and close[i] <= final_upper[i]:
+            direction[i], st[i] = -1, final_upper[i]
+        elif st[i - 1] == final_upper[i - 1] and close[i] > final_upper[i]:
+            direction[i], st[i] = 1, final_lower[i]
+        elif st[i - 1] == final_lower[i - 1] and close[i] >= final_lower[i]:
+            direction[i], st[i] = 1, final_lower[i]
+        elif st[i - 1] == final_lower[i - 1] and close[i] < final_lower[i]:
+            direction[i], st[i] = -1, final_upper[i]
+        else:
+            direction[i], st[i] = direction[i - 1], final_lower[i] if direction[i - 1] == 1 else final_upper[i]
+
+    return pd.Series(st, index=df.index), pd.Series(direction, index=df.index)
+
+
+def is_bullish_engulfing(df: pd.DataFrame) -> pd.Series:
+    """Fast, single-bar-reacting price-action pattern -- pairs well with
+    EMA (checked once per bar, same frequency) rather than a slow filter."""
+    prev_open, prev_close = df["open"].shift(1), df["close"].shift(1)
+    return ((df["close"] > df["open"]) & (prev_close < prev_open) &
+            (df["close"] >= prev_open) & (df["open"] <= prev_close))
+
+
+def is_bearish_engulfing(df: pd.DataFrame) -> pd.Series:
+    prev_open, prev_close = df["open"].shift(1), df["close"].shift(1)
+    return ((df["close"] < df["open"]) & (prev_close > prev_open) &
+            (df["close"] <= prev_open) & (df["open"] >= prev_close))
+
+
+def is_hammer(df: pd.DataFrame) -> pd.Series:
+    body = (df["close"] - df["open"]).abs()
+    lower_wick = df[["open", "close"]].min(axis=1) - df["low"]
+    upper_wick = df["high"] - df[["open", "close"]].max(axis=1)
+    return (lower_wick > 2 * body) & (upper_wick < body)
+
+
+def is_shooting_star(df: pd.DataFrame) -> pd.Series:
+    body = (df["close"] - df["open"]).abs()
+    lower_wick = df[["open", "close"]].min(axis=1) - df["low"]
+    upper_wick = df["high"] - df[["open", "close"]].max(axis=1)
+    return (upper_wick > 2 * body) & (lower_wick < body)
+
+
+def swing_points(df: pd.DataFrame, lookback: int = 3):
+    """
+    Causal swing high/low detection with confirmation lag: a bar at index
+    i-lookback is confirmed as a swing low/high only once `lookback` bars
+    have passed AFTER it (so we never use future bars relative to "now",
+    just a delayed confirmation of a past point -- safe for backtesting).
+    Used by the trendline strategy to anchor trendlines on confirmed points.
+
+    Returns (swing_low_val, swing_low_idx_offset, swing_high_val,
+    swing_high_idx_offset) as Series -- value and "how many bars ago" it
+    formed, aligned to the bar where it becomes CONFIRMED (not when it happened).
+    """
+    n = len(df)
+    low = df["low"].values
+    high = df["high"].values
+
+    swing_low_val = np.full(n, np.nan)
+    swing_low_age = np.full(n, np.nan)
+    swing_high_val = np.full(n, np.nan)
+    swing_high_age = np.full(n, np.nan)
+
+    for i in range(2 * lookback, n):
+        center = i - lookback
+        window_low = low[center - lookback:center + lookback + 1]
+        window_high = high[center - lookback:center + lookback + 1]
+        if low[center] == window_low.min():
+            swing_low_val[i] = low[center]
+            swing_low_age[i] = lookback
+        if high[center] == window_high.max():
+            swing_high_val[i] = high[center]
+            swing_high_age[i] = lookback
+
+    idx = df.index
+    return (pd.Series(swing_low_val, index=idx), pd.Series(swing_low_age, index=idx),
+            pd.Series(swing_high_val, index=idx), pd.Series(swing_high_age, index=idx))
+
+
+def adx(df: pd.DataFrame, period: int = 14):
+    """Returns (adx, plus_di, minus_di) using Wilder's smoothing."""
+    high, low, close = df["high"], df["low"], df["close"]
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+
+    atr_smooth = tr.ewm(alpha=1 / period, adjust=False).mean()
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr_smooth.replace(0, np.nan)
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr_smooth.replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx_val = dx.ewm(alpha=1 / period, adjust=False).mean()
+    return adx_val, plus_di, minus_di
+
+
+def parabolic_sar(df: pd.DataFrame, af_step: float = 0.02, af_max: float = 0.2):
+    """Returns (sar, trend) where trend is +1 (bullish/price above SAR) or -1 (bearish).
+    Causal single-pass implementation -- standard Wilder PSAR algorithm."""
+    high = df["high"].values
+    low = df["low"].values
+    n = len(df)
+    sar = np.zeros(n)
+    trend = np.zeros(n, dtype=int)
+    ep = np.zeros(n)
+    af = np.zeros(n)
+
+    trend[0] = 1
+    sar[0] = low[0]
+    ep[0] = high[0]
+    af[0] = af_step
+
+    for i in range(1, n):
+        prev_sar, prev_trend, prev_ep, prev_af = sar[i - 1], trend[i - 1], ep[i - 1], af[i - 1]
+        candidate_sar = prev_sar + prev_af * (prev_ep - prev_sar)
+
+        if prev_trend == 1:
+            candidate_sar = min(candidate_sar, low[i - 1], low[i - 2] if i >= 2 else low[i - 1])
+            if low[i] < candidate_sar:
+                trend[i], sar[i], ep[i], af[i] = -1, prev_ep, low[i], af_step
+            else:
+                trend[i], sar[i] = 1, candidate_sar
+                if high[i] > prev_ep:
+                    ep[i], af[i] = high[i], min(prev_af + af_step, af_max)
+                else:
+                    ep[i], af[i] = prev_ep, prev_af
+        else:
+            candidate_sar = max(candidate_sar, high[i - 1], high[i - 2] if i >= 2 else high[i - 1])
+            if high[i] > candidate_sar:
+                trend[i], sar[i], ep[i], af[i] = 1, prev_ep, high[i], af_step
+            else:
+                trend[i], sar[i] = -1, candidate_sar
+                if low[i] < prev_ep:
+                    ep[i], af[i] = low[i], min(prev_af + af_step, af_max)
+                else:
+                    ep[i], af[i] = prev_ep, prev_af
+
+    return pd.Series(sar, index=df.index), pd.Series(trend, index=df.index)
+
+
+def supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0):
+    """Returns (supertrend_line, direction) where direction is +1 (bullish) or -1 (bearish).
+    NaN for both outputs until the ATR warmup period (first `period` bars) has
+    passed -- trying to seed state during the ATR-NaN warmup previously caused
+    the whole series to get permanently stuck in a wrong direction."""
+    atr_val = atr(df, period)
+    hl2 = (df["high"] + df["low"]) / 2
+    upper_band = (hl2 + multiplier * atr_val).values
+    lower_band = (hl2 - multiplier * atr_val).values
+    close = df["close"].values
+    n = len(df)
+
+    final_upper = upper_band.copy()
+    final_lower = lower_band.copy()
+    st = np.full(n, np.nan)
+    direction = np.full(n, np.nan)
+
+    # Find the first bar where ATR (and therefore the bands) are valid --
+    # everything before this is left as NaN rather than seeded with garbage.
+    valid_mask = ~np.isnan(upper_band) & ~np.isnan(lower_band)
+    if not valid_mask.any():
+        return pd.Series(st, index=df.index), pd.Series(direction, index=df.index)
+    start = np.argmax(valid_mask)
+
+    direction[start] = 1
+    st[start] = final_lower[start]
+
+    for i in range(start + 1, n):
+        if not (final_upper[i] < final_upper[i - 1] or close[i - 1] > final_upper[i - 1]):
+            final_upper[i] = final_upper[i - 1]
+        if not (final_lower[i] > final_lower[i - 1] or close[i - 1] < final_lower[i - 1]):
+            final_lower[i] = final_lower[i - 1]
+
+        if st[i - 1] == final_upper[i - 1]:
+            if close[i] <= final_upper[i]:
+                direction[i], st[i] = -1, final_upper[i]
+            else:
+                direction[i], st[i] = 1, final_lower[i]
+        else:
+            if close[i] >= final_lower[i]:
+                direction[i], st[i] = 1, final_lower[i]
+            else:
+                direction[i], st[i] = -1, final_upper[i]
+
+    return pd.Series(st, index=df.index), pd.Series(direction, index=df.index)
+
+
+def is_bullish_engulfing(df: pd.DataFrame) -> pd.Series:
+    prev_open = df["open"].shift(1)
+    prev_close = df["close"].shift(1)
+    return ((df["close"] > df["open"]) & (prev_close < prev_open) &
+            (df["close"] >= prev_open) & (df["open"] <= prev_close))
+
+
+def is_bearish_engulfing(df: pd.DataFrame) -> pd.Series:
+    prev_open = df["open"].shift(1)
+    prev_close = df["close"].shift(1)
+    return ((df["close"] < df["open"]) & (prev_close > prev_open) &
+            (df["close"] <= prev_open) & (df["open"] >= prev_close))
+
+
+def is_hammer(df: pd.DataFrame) -> pd.Series:
+    body = (df["close"] - df["open"]).abs()
+    lower_wick = df[["open", "close"]].min(axis=1) - df["low"]
+    upper_wick = df["high"] - df[["open", "close"]].max(axis=1)
+    return (lower_wick > 2 * body) & (upper_wick < body)
+
+
+def is_shooting_star(df: pd.DataFrame) -> pd.Series:
+    body = (df["close"] - df["open"]).abs()
+    lower_wick = df[["open", "close"]].min(axis=1) - df["low"]
+    upper_wick = df["high"] - df[["open", "close"]].max(axis=1)
+    return (upper_wick > 2 * body) & (lower_wick < body)
+
+
+def swing_points(df: pd.DataFrame, lookback: int = 3):
+    """
+    Causal swing high/low detection: a bar at index i-lookback is confirmed
+    as a swing low/high once `lookback` bars have passed on both sides with
+    higher/lower values. Because confirmation needs `lookback` future bars,
+    the swing is only marked at the CURRENT bar once confirmed -- so no
+    look-ahead: at bar i we only know about swings confirmed at bars <= i.
+
+    Returns 4 Series: (swing_low_val, swing_low_age, swing_high_val, swing_high_age).
+    "val" is the swing price; "age" is how many bars ago (from the
+    confirmation bar) the swing candle actually occurred -- always equal to
+    `lookback` by construction, stored explicitly so callers can recover the
+    original bar index without hard-coding the lookback value themselves.
+    NaN everywhere no swing is confirmed on that bar.
+    """
+    n = len(df)
+    low = df["low"].values
+    high = df["high"].values
+    swing_low_val = np.full(n, np.nan)
+    swing_low_age = np.full(n, np.nan)
+    swing_high_val = np.full(n, np.nan)
+    swing_high_age = np.full(n, np.nan)
+
+    for i in range(2 * lookback, n):
+        center = i - lookback
+        window_low = low[center - lookback:center + lookback + 1]
+        window_high = high[center - lookback:center + lookback + 1]
+        if low[center] == window_low.min():
+            swing_low_val[i] = low[center]
+            swing_low_age[i] = lookback
+        if high[center] == window_high.max():
+            swing_high_val[i] = high[center]
+            swing_high_age[i] = lookback
+
+    idx = df.index
+    return (pd.Series(swing_low_val, index=idx), pd.Series(swing_low_age, index=idx),
+            pd.Series(swing_high_val, index=idx), pd.Series(swing_high_age, index=idx))
+
+
 def is_bullish_candle(df: pd.DataFrame) -> pd.Series:
     return df["close"] > df["open"]
 

@@ -17,6 +17,8 @@ import argparse
 import logging
 import datetime as dt
 
+from utils.timeutils import now_ist, today_ist
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -35,6 +37,12 @@ from strategies.trend_pullback import TrendPullback
 from strategies.mean_reversion import MeanReversion
 from strategies.trend_scalp_nw import TrendScalpNW
 from strategies.smc_zone_entry import SMCZoneEntry
+from strategies.composite import CompositeAnd
+from strategies.rsi_adx_nw import RsiAdxNW
+from strategies.rsi_psar_reversal import RsiPsarReversal
+from strategies.supertrend_rsi import SupertrendRsi
+from strategies.ema_price_action import EmaPriceAction
+from strategies.trendline_rsi import TrendlineRsi
 from paper_trading.engine import PaperTradingEngine
 from notify import telegram
 
@@ -56,8 +64,8 @@ def print_first_run_status():
     print("=" * 70)
     print("NSE INDEX OPTIONS PAPER-TRADING SYSTEM")
     print("=" * 70)
-    print(f"Current date/time      : {dt.datetime.now()}")
-    now_t = dt.datetime.now().time()
+    print(f"Current date/time      : {now_ist()}")
+    now_t = now_ist().time()
     market_open = config.MARKET_OPEN_TIME <= now_t <= config.MARKET_CLOSE_TIME
     print(f"Market status           : {'OPEN' if market_open else 'CLOSED'}")
     print(f"Available capital       : Rs {config.STARTING_CAPITAL:,.2f}")
@@ -102,6 +110,21 @@ def build_strategy_set(timeframe_min: int = None):
     if config.ENABLED_STRATEGIES.get("smc_zone_entry"):
         if timeframe_min is None or timeframe_min >= config.SMC_MIN_TIMEFRAME_MIN:
             strategies.append(SMCZoneEntry())
+    if config.ENABLED_STRATEGIES.get("combo_trend_vwap"):
+        strategies.append(CompositeAnd([TrendPullback(), VwapEmaMomentum()], name="combo_trend_vwap"))
+    if config.ENABLED_STRATEGIES.get("rsi_adx_nw"):
+        strategies.append(RsiAdxNW())
+    if config.ENABLED_STRATEGIES.get("rsi_psar_reversal"):
+        strategies.append(RsiPsarReversal())
+    if config.ENABLED_STRATEGIES.get("supertrend_rsi"):
+        strategies.append(SupertrendRsi())
+    if config.ENABLED_STRATEGIES.get("combo_smc_nw"):
+        if timeframe_min is None or timeframe_min >= config.SMC_MIN_TIMEFRAME_MIN:
+            strategies.append(CompositeAnd([SMCZoneEntry(), TrendScalpNW()], name="combo_smc_nw"))
+    if config.ENABLED_STRATEGIES.get("ema_price_action"):
+        strategies.append(EmaPriceAction())
+    if config.ENABLED_STRATEGIES.get("trendline_rsi"):
+        strategies.append(TrendlineRsi())
     return strategies
 
 
@@ -134,6 +157,13 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         (lambda: [MeanReversion()], "mean_reversion"),
         (lambda: [TrendScalpNW()], "trend_scalp_nw"),
         (lambda: [SMCZoneEntry()], "smc_zone_entry"),
+        (lambda: [CompositeAnd([TrendPullback(), VwapEmaMomentum()], name="combo_trend_vwap")], "combo_trend_vwap"),
+        (lambda: [RsiAdxNW()], "rsi_adx_nw"),
+        (lambda: [RsiPsarReversal()], "rsi_psar_reversal"),
+        (lambda: [SupertrendRsi()], "supertrend_rsi"),
+        (lambda: [CompositeAnd([SMCZoneEntry(), TrendScalpNW()], name="combo_smc_nw")], "combo_smc_nw"),
+        (lambda: [EmaPriceAction()], "ema_price_action"),
+        (lambda: [TrendlineRsi()], "trendline_rsi"),
     ]
 
     for index_name in instruments:
@@ -161,7 +191,7 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
                     for strat_builder, strat_name in strategy_registry:
                         if not config.ENABLED_STRATEGIES.get(strat_name):
                             continue
-                        if strat_name == "smc_zone_entry" and timeframe_min < config.SMC_MIN_TIMEFRAME_MIN:
+                        if strat_name in ("smc_zone_entry", "combo_smc_nw") and timeframe_min < config.SMC_MIN_TIMEFRAME_MIN:
                             continue  # SMC zones only tested on 15min+ (see config.SMC_MIN_TIMEFRAME_MIN)
 
                         folds = rolling_walk_forward(df, index_name, strat_builder, timeframe_min)
@@ -245,7 +275,7 @@ def _send_end_of_day_report():
     timeframe's own trades/P&L. Called both on square-off and on graceful
     shutdown."""
     import datetime as _dt
-    today_str = _dt.date.today().isoformat()
+    today_str = today_ist().isoformat()
     all_trades = database.fetch_trades(mode="paper_live")
     todays_trades = [t for t in all_trades if str(t.get("entry_time", "")).startswith(today_str)]
 
@@ -301,7 +331,7 @@ def _maybe_send_weekly_report():
     """Sends a weekly summary only when today is Friday (last trading day of
     the week), covering Monday through today."""
     import datetime as _dt
-    today = _dt.date.today()
+    today = today_ist()
     if today.weekday() != 4:  # 0=Monday ... 4=Friday
         return
     week_start = today - _dt.timedelta(days=today.weekday())
@@ -312,7 +342,7 @@ def _maybe_send_monthly_report():
     """Sends a monthly summary only when today is the last trading day
     before the month changes (i.e. tomorrow is a new month)."""
     import datetime as _dt
-    today = _dt.date.today()
+    today = today_ist()
     tomorrow = today + _dt.timedelta(days=1)
     if tomorrow.month == today.month:
         return  # not the last day of the month yet
@@ -370,7 +400,7 @@ def run_paper_trading_mode(timeframe_arg: str = None, index_arg: str = None):
 
     try:
         while True:
-            now_t = dt.datetime.now().time()
+            now_t = now_ist().time()
             if now_t >= config.SQUARE_OFF_TIME:
                 for eng in engines:
                     eng.force_square_off_all("End-of-day square-off")

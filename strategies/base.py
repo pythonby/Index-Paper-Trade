@@ -24,9 +24,20 @@ class Signal:
 
 class Strategy:
     name = "base"
-    # Which regimes this strategy is expected to work in; the regime detector
-    # will suppress signals from this strategy outside these regimes.
+    # Which regimes this strategy is expected to work in; used for SCORING
+    # (a soft signal-quality factor). For STRICT on/off gating (this
+    # strategy is not even allowed to fire outside its regime), see
+    # market_type / speed below and regime.detector.strategy_allowed().
     preferred_regimes = set()
+
+    # market_type: "trending" (only allowed when regime.trend_regime is
+    # strong_bullish/strong_bearish), "sideways" (only when trend_regime is
+    # sideways), or "any" (self-selecting internally, or works in both).
+    market_type = "any"
+
+    # speed: "slow" (blocked during high_volatility), "fast" (blocked
+    # during low_volatility), or "any" (no volatility restriction).
+    speed = "any"
 
     def generate_signal(self, df, i: int) -> Optional[Signal]:
         """
