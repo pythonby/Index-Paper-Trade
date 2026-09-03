@@ -166,6 +166,14 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         (lambda: [TrendlineRsi()], "trendline_rsi"),
     ]
 
+    # These strategies don't reference ema_fast/ema_slow at all -- testing
+    # them once per EMA combo (9x) was pure wasted compute producing
+    # identical duplicate rows every time. Test each of these exactly ONCE
+    # per (index, timeframe) instead, using the first valid EMA combo just
+    # to build the indicator dataframe (the EMA values themselves are unused).
+    EMA_INDEPENDENT_STRATEGIES = {"mean_reversion", "rsi_psar_reversal", "supertrend_rsi"}
+    already_tested_independent = set()
+
     for index_name in instruments:
         for timeframe_min in timeframes:
             period = "7d" if timeframe_min == 1 else "60d"
@@ -194,18 +202,27 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
                         if strat_name in ("smc_zone_entry", "combo_smc_nw") and timeframe_min < config.SMC_MIN_TIMEFRAME_MIN:
                             continue  # SMC zones only tested on 15min+ (see config.SMC_MIN_TIMEFRAME_MIN)
 
+                        independent_key = (index_name, timeframe_min, strat_name)
+                        if strat_name in EMA_INDEPENDENT_STRATEGIES:
+                            if independent_key in already_tested_independent:
+                                continue  # already tested this strategy for this index/timeframe -- skip duplicate
+                            already_tested_independent.add(independent_key)
+                            label = strat_name  # no "(EMAx/y)" suffix since EMA is irrelevant to this strategy
+                        else:
+                            label = f"{strat_name} (EMA{ema_fast}/{ema_slow})"
+
                         folds = rolling_walk_forward(df, index_name, strat_builder, timeframe_min)
                         fold_summary = summarize_folds(folds)
 
                         full_result = run_backtest(df, index_name, strat_builder(), timeframe_min)
                         metrics = compute_metrics(full_result.trades, full_result.equity_curve, config.STARTING_CAPITAL)
 
-                        key = (f"{strat_name} (EMA{ema_fast}/{ema_slow})", index_name, timeframe_min)
+                        key = (label, index_name, timeframe_min)
                         all_results[key] = metrics
 
                         if fold_summary["overall_robust"]:
                             any_robust = True
-                        print(f"[{index_name} {timeframe_min}m] {strat_name} EMA{ema_fast}/{ema_slow}: "
+                        print(f"[{index_name} {timeframe_min}m] {label}: "
                               f"{metrics['num_trades']} trades, net Rs{metrics['net_pnl']}, "
                               f"walk-forward robust={fold_summary['overall_robust']} ({fold_summary['reason']})")
 
