@@ -2,15 +2,20 @@ name: NSE Paper Trading Bot
 
 # Runs entirely on GitHub's free cloud runners. Nothing installs on your PC.
 #
-# Schedule: triggers every weekday at 9:10 AM IST (3:40 AM UTC), which is
-# a few minutes before market open, so the bot is ready to poll right at
-# 9:15 AM IST. It runs until the end-of-day square-off (15:15 IST) and
-# then exits on its own -- see main.py's run_paper_trading_mode().
+# Backtest and live paper trading run as TWO SEPARATE JOBS in this workflow.
+# GitHub Actions runs jobs in parallel by default unless one explicitly
+# `needs:` the other -- neither job here does, so both start at the same
+# time and run independently. This is safe because backtest never writes
+# to the shared trade database (db/trading.db) -- it only computes results
+# in memory and reports them via print/Telegram, so there's no conflict
+# with the live engine's database reads/writes.
 #
-# NOTE: GitHub cron schedules can occasionally fire a few minutes late
-# during high load. That's a platform limitation, not something this
-# workflow can control. If timing precision matters to you, an always-on
-# VM (see README) is more reliable than a scheduled job.
+# Schedule: triggers every weekday at 9:10 AM IST (3:40 AM UTC), which is
+# a few minutes before market open. NOTE: GitHub's free-tier scheduled
+# workflows can be delayed -- sometimes by hours -- during high platform
+# load. This is a documented GitHub limitation, not something this
+# workflow can control. For guaranteed timing, trigger manually during
+# market hours, or use an always-on VM instead (see README).
 
 on:
   schedule:
@@ -29,6 +34,28 @@ on:
         type: string
 
 jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py backtest --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
+
   paper-trade:
     runs-on: ubuntu-latest
     timeout-minutes: 350       # GitHub's hard cap is 360 min (6h) -- stay safely under it
@@ -50,14 +77,7 @@ jobs:
         with:
           name: trading-db-persistent
           path: db/
-        continue-on-error: true   # fine if this is the very first run and no artifact exists yet
-
-      - name: Run backtest sanity check
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py backtest --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
-        continue-on-error: true   # don't block paper trading if backtest step has a hiccup
+        continue-on-error: true
 
       - name: Run live paper trading until square-off
         env:
