@@ -72,8 +72,11 @@ def build_comparison_table(results_by_key: dict) -> str:
 
 def build_telegram_summary(results_by_key: dict, max_rows: int = 15) -> str:
     """
-    Compact, plain-text summary suitable for Telegram (no markdown tables,
-    since Telegram doesn't render them -- they show up as raw '|' text).
+    Builds a real monospace TABLE for Telegram, wrapped in an HTML <pre>
+    block (rendered fixed-width by Telegram -- notify.telegram.send_
+    backtest_summary sends this with parse_mode="HTML"). Telegram does NOT
+    render markdown pipe-tables, which is why a plain "| a | b |" string
+    used to show up as garbled text with visible pipe characters.
 
     Shows: total combinations tested, how many had zero trades vs some
     trades, and up to `max_rows` of the combinations that actually
@@ -98,14 +101,27 @@ def build_telegram_summary(results_by_key: dict, max_rows: int = 15) -> str:
         return "\n".join(lines)
 
     sorted_items = sorted(with_trades.items(), key=lambda kv: kv[1]["net_pnl"], reverse=True)
-    lines.append(f"Top {min(max_rows, len(sorted_items))} by net P&L:")
-    for (strategy, index_name, tf), m in sorted_items[:max_rows]:
+    shown = sorted_items[:max_rows]
+
+    idx_short = {"NIFTY": "NIFTY", "BANKNIFTY": "BANK", "FINNIFTY": "FIN"}
+
+    header = f"{'Strategy (EMA)':<26}{'Idx':<6}{'TF':>4}{'Trd':>5}{'Win%':>6}{'PF':>7}{'Net P&L':>10}"
+    sep = "-" * len(header)
+    table_rows = [header, sep]
+    for (strategy, index_name, tf), m in shown:
         pf = m["profit_factor"]
         pf_str = f"{pf:.2f}" if isinstance(pf, (int, float)) else "N/A"
-        lines.append(
-            f"• {strategy} | {index_name} {tf}m — {m['num_trades']} trades, "
-            f"{m['win_rate']:.0f}% win, PF {pf_str}, net Rs{m['net_pnl']:.0f}"
+        strat = strategy if len(strategy) <= 25 else strategy[:24] + "…"
+        idx = idx_short.get(index_name, index_name[:5])
+        table_rows.append(
+            f"{strat:<26}{idx:<6}{str(tf) + 'm':>4}{m['num_trades']:>5}"
+            f"{m['win_rate']:>5.0f}%{pf_str:>7}{m['net_pnl']:>+10.0f}"
         )
+
+    lines.append(f"Top {len(shown)} by net P&L (Rs):")
+    lines.append("<pre>" + "\n".join(table_rows) + "</pre>")
+    lines.append("")
+    lines.append("(Scroll the table sideways on mobile to see all columns.)")
 
     if len(sorted_items) > max_rows:
         lines.append(f"... and {len(sorted_items) - max_rows} more (see GitHub Actions log for the full table).")

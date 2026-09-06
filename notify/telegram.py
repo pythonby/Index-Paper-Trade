@@ -25,7 +25,7 @@ class TelegramError(Exception):
     pass
 
 
-def _send(text: str):
+def _send(text: str, parse_mode: str = None):
     if not config.TELEGRAM_ENABLED:
         logger.info("Telegram not configured (TELEGRAM_BOT_TOKEN/CHAT_ID missing); "
                      "message suppressed. Set them in your .env to enable notifications.")
@@ -34,6 +34,8 @@ def _send(text: str):
 
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": config.TELEGRAM_CHAT_ID, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         resp = requests.post(url, data=payload, timeout=8)
         resp.raise_for_status()
@@ -114,11 +116,15 @@ def send_daily_report(report_text: str):
 
 def send_backtest_summary(summary_text: str):
     """Telegram has a 4096-character message limit, so long comparison
-    tables are truncated with a pointer to the full GitHub Actions log."""
+    tables are truncated with a pointer to the full GitHub Actions log.
+    summary_text may contain an HTML <pre>...</pre> block (built by
+    reports.performance.build_telegram_summary) for a monospace-aligned
+    table -- sent with parse_mode=HTML so Telegram actually renders it
+    as a fixed-width grid instead of raw text."""
     max_len = 3500
     if len(summary_text) > max_len:
         summary_text = summary_text[:max_len] + "\n\n... (truncated -- see full results in the GitHub Actions log for this run)"
-    return _send(f"{BOT_NAME}\n📊 BACKTEST REPORT\n{BANNER}\n\n{summary_text}")
+    return _send(f"{BOT_NAME}\n📊 BACKTEST REPORT\n{BANNER}\n\n{summary_text}", parse_mode="HTML")
 
 
 def send_alert(message: str):
