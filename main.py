@@ -17,7 +17,7 @@ import argparse
 import logging
 import datetime as dt
 
-from utils.timeutils import now_ist, today_ist
+from utils.timeutils import now_ist, today_ist, is_trading_day
 
 try:
     from dotenv import load_dotenv
@@ -66,8 +66,9 @@ def print_first_run_status():
     print("=" * 70)
     print(f"Current date/time      : {now_ist()}")
     now_t = now_ist().time()
-    market_open = config.MARKET_OPEN_TIME <= now_t <= config.MARKET_CLOSE_TIME
-    print(f"Market status           : {'OPEN' if market_open else 'CLOSED'}")
+    market_open = is_trading_day() and (config.MARKET_OPEN_TIME <= now_t <= config.MARKET_CLOSE_TIME)
+    print(f"Market status           : {'OPEN' if market_open else 'CLOSED'}"
+          f"{' (weekend)' if not is_trading_day() else ''}")
     print(f"Available capital       : Rs {config.STARTING_CAPITAL:,.2f}")
     print(f"Enabled strategies      : {[k for k, v in config.ENABLED_STRATEGIES.items() if v]}")
     print(f"Data-feed status        : Not yet checked (checked on first poll)")
@@ -414,6 +415,12 @@ def run_paper_trading_mode(timeframe_arg: str = None, index_arg: str = None):
 
     print(f"\nStarting live paper-trading loop for {len(engines)} engine(s) "
           f"({instruments_to_run} x {timeframes_to_run}). Press Ctrl+C to stop safely.\n")
+
+    if not is_trading_day():
+        print(f"Today ({today_ist()}) is a weekend -- NSE is closed. Exiting immediately "
+              f"instead of idling. (This does not account for NSE holidays on weekdays; "
+              f"the live data-feed's own stale-data checks catch those.)")
+        return
 
     try:
         while True:

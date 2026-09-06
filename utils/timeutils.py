@@ -25,3 +25,14 @@ def now_ist() -> datetime:
 def today_ist() -> date:
     """Current date in IST (matters near midnight -- IST date can differ from UTC date)."""
     return now_ist().date()
+
+
+def is_trading_day(d: date = None) -> bool:
+    """True for Monday-Friday. Does NOT account for NSE holidays (there's no
+    free, reliable, always-up-to-date holiday calendar API) -- it only rules
+    out weekends. A holiday on a weekday will still look like a trading day
+    here; the live data-feed's stale-data / fail-safe checks are what catch
+    that case and halt safely."""
+    if d is None:
+        d = today_ist()
+    return d.weekday() < 5  # 0=Monday ... 4=Friday, 5=Saturday, 6=Sunday
