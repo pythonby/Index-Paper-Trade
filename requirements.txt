@@ -3,3 +3,12 @@ numpy>=1.24.0
 yfinance>=0.2.40
 requests>=2.31.0
 python-dotenv>=1.0.0
+
+# Optional: only needed if you configure Angel One SmartAPI credentials
+# (config.py section 8) for the live option-chain feed. Safe to leave
+# installed even if unused -- the system falls back to free NSE scraping
+# automatically when Angel One credentials are not set.
+smartapi-python>=1.5.5
+pyotp>=2.9.0
+logzero>=1.7.0
+websocket-client>=1.7.0

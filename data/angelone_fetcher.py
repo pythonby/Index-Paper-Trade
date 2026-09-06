@@ -1,0 +1,292 @@
+"""
+data/angelone_fetcher.py
+=========================
+OPTIONAL live-option-chain data source using Angel One's official SmartAPI,
+for people who have a free Angel One demat account.
+
+WHY THIS EXISTS:
+The default NSE scraping method (data.fetcher.fetch_live_option_chain_nse)
+hits NSE's unofficial, undocumented option-chain endpoint. NSE actively
+blocks/rate-limits requests coming from cloud/datacenter IP ranges
+(AWS, GCP, Azure, GitHub Actions runners, etc.) -- this is a well-known,
+real-world limitation, not a bug in this codebase. If you run this system
+on GitHub Actions and the live paper-trading loop halts within seconds of
+starting every day, this is almost always why.
+
+Angel One's SmartAPI is an OFFICIAL, AUTHENTICATED API (free for Angel One
+clients) and is NOT subject to the same anti-bot blocking, so it works
+reliably from GitHub Actions.
+
+This module returns data in the SAME shape as the NSE endpoint
+(see data.fetcher.fetch_live_option_chain_nse's docstring / the shape
+consumed by options.selector.select_live_contract), so nothing else in
+the codebase needs to change -- data.fetcher.fetch_live_option_chain()
+picks this module automatically when config.ANGEL_ENABLED is True.
+
+CREDENTIALS NEEDED (see config.py section 8 for where to set these):
+    ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PASSWORD, ANGEL_TOTP_SECRET
+
+HOW IT WORKS:
+1. Logs in once per process (session cached in memory) using TOTP 2FA.
+2. Downloads Angel's public instrument/scrip master JSON (cached to disk
+   for up to ANGEL_SCRIPMASTER_CACHE_HOURS hours -- it's a large file and
+   Angel only refreshes it once a day at ~8:30 AM IST, so re-downloading
+   every 30-second poll would be wasteful and slow).
+3. Finds index-option contracts (OPTIDX) for the requested symbol, picks
+   strikes near the current spot, and batch-fetches live quotes (LTP,
+   bid/ask, OI, volume) via Angel's Market Data (Quote) API.
+4. Assembles a dict shaped exactly like NSE's option-chain JSON so
+   options.selector.select_live_contract() can consume it unchanged.
+
+This is UNOFFICIAL glue code (not written/endorsed by Angel One) -- Angel's
+API surface can change. Any failure here raises DataFeedError, same
+fail-safe contract as the NSE path: never guess, just stop.
+"""
+
+import json
+import logging
+import os
+import time
+from datetime import datetime, date, timedelta
+from typing import Optional
+
+import requests
+
+import config
+from data.fetcher import DataFeedError
+
+logger = logging.getLogger("data.angelone_fetcher")
+
+_SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+_SCRIP_MASTER_CACHE_PATH = os.path.join(os.path.dirname(__file__), ".angel_scrip_master_cache.json")
+_SCRIP_MASTER_CACHE_HOURS = 20  # Angel refreshes their master once/day; well under 24h is safe
+
+# Angel's fixed symbol tokens for the underlying indices themselves
+# (confirmed against Angel's own instrument master / support forum -- these
+# are NOT option contracts, just the index quote itself, exchange NSE).
+_INDEX_TOKENS = {
+    "NIFTY": ("NSE", "99926000", "Nifty 50"),
+    "BANKNIFTY": ("NSE", "99926009", "Nifty Bank"),
+    "FINNIFTY": ("NSE", "99926037", "Nifty Fin Service"),
+}
+
+# How many strikes on either side of ATM to pull quotes for. Wider than
+# config.MAX_STRIKES_FROM_ATM so the selector's liquidity fallback still has
+# a couple of extra candidates to fall back to, same margin the NSE endpoint
+# naturally provides (it returns the whole chain; we only pull a slice).
+_STRIKE_WINDOW = 5
+
+# Angel's quote API accepts a limited number of tokens per call; chunk to
+# stay well under any undocumented limit.
+_QUOTE_BATCH_SIZE = 40
+
+STRIKE_STEPS = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50}
+
+_session_cache = {"client": None, "logged_in_at": None}
+
+
+def _get_client():
+    """Return a logged-in SmartConnect client, reusing the session for the
+    lifetime of this process. Angel sessions are valid for the trading day,
+    which comfortably covers one GitHub Actions run."""
+    if _session_cache["client"] is not None:
+        return _session_cache["client"]
+
+    try:
+        from SmartApi import SmartConnect
+        import pyotp
+    except ImportError as e:
+        raise DataFeedError(
+            "Angel One packages not installed. Run: "
+            "pip install smartapi-python pyotp logzero websocket-client"
+        ) from e
+
+    if not config.ANGEL_ENABLED:
+        raise DataFeedError(
+            "Angel One credentials not configured (ANGEL_API_KEY / "
+            "ANGEL_CLIENT_CODE / ANGEL_PASSWORD / ANGEL_TOTP_SECRET)."
+        )
+
+    try:
+        totp = pyotp.TOTP(config.ANGEL_TOTP_SECRET).now()
+        client = SmartConnect(api_key=config.ANGEL_API_KEY)
+        session = client.generateSession(config.ANGEL_CLIENT_CODE, config.ANGEL_PASSWORD, totp)
+        if not session or not session.get("status"):
+            raise DataFeedError(f"Angel One login failed: {session}")
+    except DataFeedError:
+        raise
+    except Exception as e:
+        raise DataFeedError(f"Angel One login error: {e}") from e
+
+    _session_cache["client"] = client
+    _session_cache["logged_in_at"] = time.time()
+    logger.info("Angel One SmartAPI session established.")
+    return client
+
+
+def _load_scrip_master() -> list:
+    """Download (or reuse a same-day cached copy of) Angel's instrument
+    master. This file is large (tens of MB) so we cache it to disk."""
+    try:
+        if os.path.exists(_SCRIP_MASTER_CACHE_PATH):
+            age_hours = (time.time() - os.path.getmtime(_SCRIP_MASTER_CACHE_PATH)) / 3600
+            if age_hours < _SCRIP_MASTER_CACHE_HOURS:
+                with open(_SCRIP_MASTER_CACHE_PATH, "r") as f:
+                    return json.load(f)
+    except Exception as e:
+        logger.warning("Could not read cached scrip master, re-downloading: %s", e)
+
+    try:
+        resp = requests.get(_SCRIP_MASTER_URL, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise DataFeedError(f"Could not download Angel One scrip master: {e}") from e
+
+    try:
+        with open(_SCRIP_MASTER_CACHE_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.warning("Could not cache scrip master to disk (non-fatal): %s", e)
+
+    return data
+
+
+def _parse_expiry(expiry_str: str) -> Optional[date]:
+    for fmt in ("%d%b%Y", "%d-%b-%Y"):
+        try:
+            return datetime.strptime(expiry_str.upper(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _get_spot(client, symbol: str) -> float:
+    exch, token, name = _INDEX_TOKENS[symbol]
+    try:
+        result = client.getMarketData(mode="LTP", exchangeTokens={exch: [token]})
+        fetched = result.get("data", {}).get("fetched", [])
+        if not fetched:
+            raise DataFeedError(f"Angel One returned no LTP data for {symbol} index.")
+        return float(fetched[0]["ltp"])
+    except DataFeedError:
+        raise
+    except Exception as e:
+        raise DataFeedError(f"Angel One spot-price fetch failed for {symbol}: {e}") from e
+
+
+def _batch_quotes(client, exch: str, tokens: list) -> dict:
+    """Returns {token: fetched_row} for every token successfully quoted."""
+    out = {}
+    for i in range(0, len(tokens), _QUOTE_BATCH_SIZE):
+        chunk = tokens[i:i + _QUOTE_BATCH_SIZE]
+        try:
+            result = client.getMarketData(mode="FULL", exchangeTokens={exch: chunk})
+        except Exception as e:
+            raise DataFeedError(f"Angel One quote fetch failed: {e}") from e
+        for row in result.get("data", {}).get("fetched", []):
+            out[str(row.get("symbolToken"))] = row
+        time.sleep(0.3)  # be gentle with the rate limit across chunks
+    return out
+
+
+def fetch_live_option_chain_angelone(symbol: str) -> dict:
+    """
+    Drop-in replacement for data.fetcher.fetch_live_option_chain_nse().
+    Returns the SAME NSE-shaped dict:
+        {"records": {"underlyingValue": <float>,
+                      "expiryDates": [<"DD-Mon-YYYY">, ...],
+                      "data": [{"expiryDate": ..., "strikePrice": ...,
+                                "CE": {...}, "PE": {...}}, ...]}}
+    Raises DataFeedError on any failure -- caller must stop generating new
+    trades, never guess.
+    """
+    if symbol not in _INDEX_TOKENS:
+        raise DataFeedError(f"No Angel One index-token mapping configured for {symbol}")
+
+    client = _get_client()
+    spot = _get_spot(client, symbol)
+
+    instruments = _load_scrip_master()
+    step = STRIKE_STEPS.get(symbol, 50)
+    atm = round(spot / step) * step
+
+    today = date.today()
+    candidates_by_expiry = {}
+    for inst in instruments:
+        try:
+            if inst.get("name") != symbol or inst.get("instrumenttype") != "OPTIDX":
+                continue
+            expiry = _parse_expiry(inst.get("expiry", ""))
+            if expiry is None or expiry < today:
+                continue
+            strike = float(inst.get("strike", "0")) / 100.0
+            if abs(strike - atm) / step > _STRIKE_WINDOW:
+                continue
+            symbol_str = inst.get("symbol", "")
+            opt_type = "CE" if symbol_str.endswith("CE") else ("PE" if symbol_str.endswith("PE") else None)
+            if opt_type is None:
+                continue
+            candidates_by_expiry.setdefault(expiry, []).append({
+                "token": str(inst["token"]),
+                "strike": strike,
+                "opt_type": opt_type,
+                "exch": inst.get("exch_seg", "NFO"),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    if not candidates_by_expiry:
+        raise DataFeedError(
+            f"No live OPTIDX contracts found for {symbol} in Angel One scrip master "
+            f"(near strike {atm}). The scrip master may not have refreshed, or the "
+            f"instrument list format may have changed."
+        )
+
+    # Keep the nearest couple of expiries only (matches config.MAX_DAYS_TO_EXPIRY
+    # window used downstream by options.selector.select_live_contract's rolling logic).
+    sorted_expiries = sorted(candidates_by_expiry.keys())[:3]
+
+    all_tokens_by_exch = {}
+    for exp in sorted_expiries:
+        for row in candidates_by_expiry[exp]:
+            all_tokens_by_exch.setdefault(row["exch"], set()).add(row["token"])
+
+    quotes_by_token = {}
+    for exch, tokens in all_tokens_by_exch.items():
+        quotes_by_token.update(_batch_quotes(client, exch, list(tokens)))
+
+    data_rows = []
+    for exp in sorted_expiries:
+        exp_str = exp.strftime("%d-%b-%Y")
+        by_strike = {}
+        for row in candidates_by_expiry[exp]:
+            q = quotes_by_token.get(row["token"])
+            if q is None:
+                continue
+            depth = q.get("depth", {}) or {}
+            buy = depth.get("buy") or [{}]
+            sell = depth.get("sell") or [{}]
+            leg = {
+                "lastPrice": q.get("ltp", 0.0),
+                "bidprice": (buy[0] or {}).get("price"),
+                "askPrice": (sell[0] or {}).get("price"),
+                "openInterest": q.get("opnInterest"),
+                "totalTradedVolume": q.get("tradeVolume"),
+            }
+            entry = by_strike.setdefault(row["strike"], {"strikePrice": row["strike"], "expiryDate": exp_str})
+            entry[row["opt_type"]] = leg
+        data_rows.extend(by_strike.values())
+
+    if not data_rows:
+        raise DataFeedError(
+            f"Angel One quotes came back empty for all {symbol} contracts near strike {atm}."
+        )
+
+    return {
+        "records": {
+            "underlyingValue": spot,
+            "expiryDates": [e.strftime("%d-%b-%Y") for e in sorted_expiries],
+            "data": data_rows,
+        }
+    }

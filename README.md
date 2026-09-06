@@ -136,6 +136,31 @@ elsewhere.
 - To remove a strategy: set its entry in `config.ENABLED_STRATEGIES` to
   `False`, or delete its file and references in `main.py`.
 
+## 7a. Live option-chain data: NSE (default) vs Angel One (recommended for GitHub Actions)
+
+By default, `python main.py paper` fetches the live option chain from NSE's
+public, unofficial endpoint. **NSE frequently blocks/rate-limits requests
+from cloud/datacenter IPs** (including GitHub Actions runners) — if your
+paper-trading job on GitHub Actions exits within seconds every day instead
+of running until square-off, this is almost always why.
+
+If you have a free Angel One demat account, you can switch to Angel One's
+official SmartAPI instead, which works reliably from cloud IPs. Set these
+four values (in `.env` locally, or as **repo Secrets** in GitHub — Settings
+→ Secrets and variables → Actions — if using GitHub Actions):
+
+| Variable | Where to get it |
+|---|---|
+| `ANGEL_API_KEY` | Create an app at https://smartapi.angelone.in |
+| `ANGEL_CLIENT_CODE` | Your normal Angel One login/client ID |
+| `ANGEL_PASSWORD` | Your Angel One MPIN (not your trading password) |
+| `ANGEL_TOTP_SECRET` | One-time secret shown at https://smartapi.angelone.in/enable-totp |
+
+If any of these four are missing, the system automatically uses the free
+NSE method instead — no code changes needed either way, and no real orders
+are ever placed through Angel One; it's used purely as a market-data source
+for this paper-trading system.
+
 ## 7. Getting a Telegram bot token & chat ID (free)
 
 1. Open Telegram, message **@BotFather**, send `/newbot`, follow the

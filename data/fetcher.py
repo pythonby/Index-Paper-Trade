@@ -130,9 +130,42 @@ _NSE_HEADERS = {
 
 def fetch_live_option_chain(symbol: str, max_retries: int = 2, timeout: int = 8) -> dict:
     """
+    Fetch the LIVE option chain snapshot for actual paper trading.
+
+    ROUTING: if Angel One credentials are configured (config.ANGEL_ENABLED),
+    this uses the official, authenticated Angel One SmartAPI, which works
+    reliably from cloud/CI environments (GitHub Actions, etc.) -- see
+    data/angelone_fetcher.py for why this matters. Otherwise it falls back
+    to the free-but-unofficial NSE scraping method below, which NSE
+    frequently blocks from datacenter IPs.
+
+    Either path returns the same NSE-shaped dict and raises DataFeedError
+    on failure -- callers must stop generating new signals rather than
+    guess values.
+    """
+    if config.ANGEL_ENABLED:
+        from data.angelone_fetcher import fetch_live_option_chain_angelone
+        try:
+            return fetch_live_option_chain_angelone(symbol)
+        except DataFeedError as e:
+            logger.warning("Angel One option chain fetch failed (%s); "
+                            "falling back to free NSE endpoint for this poll.", e)
+            # fall through to NSE path below rather than halting outright --
+            # NSE occasionally works even when Angel has a transient issue.
+
+    return fetch_live_option_chain_nse(symbol, max_retries=max_retries, timeout=timeout)
+
+
+def fetch_live_option_chain_nse(symbol: str, max_retries: int = 2, timeout: int = 8) -> dict:
+    """
     Fetch the LIVE option chain snapshot from NSE's public JSON endpoint.
     This is UNOFFICIAL and can break at any time -- callers must handle
     DataFeedError and stop generating new signals rather than guess values.
+    KNOWN LIMITATION: NSE frequently blocks/rate-limits requests from
+    cloud/datacenter IPs (AWS, GCP, Azure, GitHub Actions runners). If this
+    consistently fails only when running via GitHub Actions, configure
+    Angel One credentials instead (see config.py section 8) -- fetch_live_
+    option_chain() above will then use that automatically.
 
     Returns the raw parsed JSON (caller extracts CE/PE rows for the desired
     expiry/strike).

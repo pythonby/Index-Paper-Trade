@@ -9,6 +9,9 @@
 db/*.db
 logs/*.log
 
+# Cached Angel One instrument master (large file, re-downloaded automatically)
+data/.angel_scrip_master_cache.json
+
 # Python cache/build artifacts
 __pycache__/
 *.pyc

@@ -83,6 +83,13 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Optional -- only needed if you want the live option-chain feed to
+          # use Angel One's SmartAPI instead of free (and often cloud-blocked)
+          # NSE scraping. Safe to leave unset: falls back to NSE automatically.
+          ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
+          ANGEL_CLIENT_CODE: ${{ secrets.ANGEL_CLIENT_CODE }}
+          ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
+          ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
         run: python main.py paper --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
 
       - name: Persist trade database for next run

@@ -160,6 +160,34 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
+# ---------------------------------------------------------------------------
+# 8. LIVE OPTION-CHAIN DATA SOURCE (Angel One SmartAPI, optional)
+# ---------------------------------------------------------------------------
+# By default the system scrapes NSE's public (unofficial) option-chain
+# endpoint -- see data/fetcher.py. That endpoint is frequently blocked/rate-
+# limited from cloud/datacenter IPs (including GitHub Actions runners).
+#
+# If you have a free Angel One demat account, you can instead pull the live
+# option chain via Angel One's official SmartAPI (authenticated, works fine
+# from cloud IPs). To enable this, set ALL FOUR of the environment variables
+# below (in your .env locally, or as GitHub repo Secrets for Actions):
+#
+#   ANGEL_API_KEY      -- from https://smartapi.angelone.in (create an app)
+#   ANGEL_CLIENT_CODE   -- your Angel One login / client ID
+#   ANGEL_PASSWORD      -- your Angel One MPIN (NOT your trading password)
+#   ANGEL_TOTP_SECRET   -- the TOTP secret shown when you enable TOTP at
+#                          https://smartapi.angelone.in/enable-totp
+#                          (this is a one-time-shown secret string, NOT a
+#                          6-digit code -- save it when you first see it)
+#
+# If any of these are missing, the system automatically falls back to the
+# free NSE scraping method (data.fetcher.fetch_live_option_chain_nse).
+ANGEL_API_KEY = os.environ.get("ANGEL_API_KEY", "")
+ANGEL_CLIENT_CODE = os.environ.get("ANGEL_CLIENT_CODE", "")
+ANGEL_PASSWORD = os.environ.get("ANGEL_PASSWORD", "")
+ANGEL_TOTP_SECRET = os.environ.get("ANGEL_TOTP_SECRET", "")
+ANGEL_ENABLED = bool(ANGEL_API_KEY and ANGEL_CLIENT_CODE and ANGEL_PASSWORD and ANGEL_TOTP_SECRET)
+
 # Name shown at the top of every Telegram message this bot sends.
 # Change this to whatever you'd like -- no code changes needed elsewhere.
 BOT_DISPLAY_NAME = "📍 Nushi Index"
