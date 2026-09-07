@@ -103,7 +103,15 @@ class PaperTradingEngine:
             return
 
         self.last_data_time = df.index[-1]
-        if is_data_stale(self.last_data_time):
+        # Staleness threshold must scale with the timeframe: a 5-minute
+        # candle's timestamp is expected to stay unchanged for up to 5
+        # minutes until the next candle closes -- that is NORMAL, not stale.
+        # A fixed ~90-second threshold (the old default) would flag almost
+        # every 5m/15m/30m/60m poll as "stale" and halt trading immediately,
+        # which is what was happening here. Allow one full candle interval
+        # plus a buffer for the data provider's own reporting lag.
+        staleness_budget = self.timeframe_min * 60 + 150
+        if is_data_stale(self.last_data_time, max_staleness_seconds=staleness_budget):
             self._fail_safe_stop(f"Data appears stale (last tick {self.last_data_time}).")
             return
 
