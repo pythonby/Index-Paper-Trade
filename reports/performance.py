@@ -6,6 +6,7 @@ and formats the strategy comparison table + daily Telegram report text.
 """
 
 import pandas as pd
+import html
 
 
 def compute_metrics(trades: list, equity_curve: list, starting_capital: float) -> dict:
@@ -118,8 +119,11 @@ def build_telegram_summary(results_by_key: dict, max_rows: int = 15) -> str:
             f"{m['win_rate']:>5.0f}%{pf_str:>7}{m['net_pnl']:>+10.0f}"
         )
 
-    lines.append(f"Top {len(shown)} by net P&L (Rs):")
-    lines.append("<pre>" + "\n".join(table_rows) + "</pre>")
+    lines.append(f"Top {len(shown)} by net P/L (Rs):")
+    table_text = html.escape("\n".join(table_rows))  # Telegram's HTML parse_mode
+    # requires &, <, > to be escaped -- unescaped "&" (e.g. in "Net P&L")
+    # otherwise makes Telegram reject the WHOLE message with a 400 error.
+    lines.append(f"<pre>{table_text}</pre>")
     lines.append("")
     lines.append("(Scroll the table sideways on mobile to see all columns.)")
 

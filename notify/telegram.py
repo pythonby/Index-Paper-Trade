@@ -120,10 +120,24 @@ def send_backtest_summary(summary_text: str):
     summary_text may contain an HTML <pre>...</pre> block (built by
     reports.performance.build_telegram_summary) for a monospace-aligned
     table -- sent with parse_mode=HTML so Telegram actually renders it
-    as a fixed-width grid instead of raw text."""
+    as a fixed-width grid instead of raw text.
+
+    IMPORTANT: naively slicing HTML text with str[:n] can cut in the
+    middle of a tag or an escaped entity (e.g. "&amp;" -> "&am"), which
+    makes Telegram reject the ENTIRE message as invalid HTML (not just
+    truncate it -- nothing gets delivered at all). So truncation here
+    always backs up to a safe newline boundary and force-closes any
+    <pre> tag left open by the cut.
+    """
     max_len = 3500
     if len(summary_text) > max_len:
-        summary_text = summary_text[:max_len] + "\n\n... (truncated -- see full results in the GitHub Actions log for this run)"
+        truncated = summary_text[:max_len]
+        last_nl = truncated.rfind("\n")
+        if last_nl > 0:
+            truncated = truncated[:last_nl]
+        if truncated.count("<pre>") > truncated.count("</pre>"):
+            truncated += "</pre>"
+        summary_text = truncated + "\n\n... (truncated -- see full results in the GitHub Actions log for this run)"
     return _send(f"{BOT_NAME}\n📊 BACKTEST REPORT\n{BANNER}\n\n{summary_text}", parse_mode="HTML")
 
 
