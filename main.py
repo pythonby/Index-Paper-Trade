@@ -177,7 +177,15 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
 
     for index_name in instruments:
         for timeframe_min in timeframes:
-            period = "7d" if timeframe_min == 1 else "60d"
+            if config.ANGEL_ENABLED:
+                # Angel One's historical API isn't capped at Yahoo's free-tier
+                # limits -- pull much more history so each strategy/EMA/
+                # timeframe combination gets a meaningful number of trades to
+                # judge instead of 1-4. 1m candles are heavier to fetch/store
+                # so kept shorter; everything else gets ~1 year.
+                period = "90d" if timeframe_min == 1 else "365d"
+            else:
+                period = "7d" if timeframe_min == 1 else "60d"
             try:
                 raw_df = fetch_index_history(index_name, timeframe_min, period=period)
             except DataFeedError as e:

@@ -48,17 +48,40 @@ class DataFeedError(Exception):
 
 def fetch_index_history(symbol: str, interval_min: int, period: str = "60d") -> pd.DataFrame:
     """
-    Fetch historical OHLCV bars for an index via yfinance.
+    Fetch historical OHLCV bars for an index.
+
+    ROUTING: if Angel One credentials are configured (config.ANGEL_ENABLED),
+    this uses Angel One's official historical-candle API, which is NOT
+    subject to Yahoo Finance's free-tier history cap (~60 days for 5m
+    candles, ~7 days for 1m) -- see data/angelone_fetcher.py. This matters
+    most for backtesting: more history means more trades per strategy
+    combination, which means results you can actually draw a conclusion
+    from instead of 1-4 trades of noise. Falls back to yfinance if Angel
+    One fails or isn't configured.
 
     symbol: one of config.INSTRUMENTS ("NIFTY", "BANKNIFTY", "FINNIFTY")
     interval_min: one of config.TIMEFRAMES_MIN
-    period: yfinance period string, e.g. "7d", "60d". Longer periods will be
-            silently truncated by Yahoo for intraday intervals -- see module
-            docstring.
+    period: a string like "7d", "60d", "365d" -- interpreted as a day count
+            regardless of source. Longer periods on the yfinance path will
+            be silently truncated by Yahoo for intraday intervals -- see
+            below.
 
     Returns a DataFrame indexed by tz-aware IST timestamp with columns:
     open, high, low, close, volume
     """
+    if config.ANGEL_ENABLED:
+        from data.angelone_fetcher import fetch_index_history_angelone
+        try:
+            days = int(period.rstrip("d"))
+        except ValueError:
+            days = 60
+        try:
+            return fetch_index_history_angelone(symbol, interval_min, days=days)
+        except DataFeedError as e:
+            logger.warning("Angel One historical-data fetch failed (%s); "
+                            "falling back to free yfinance for this call.", e)
+            # fall through to yfinance below
+
     try:
         import yfinance as yf
     except ImportError as e:

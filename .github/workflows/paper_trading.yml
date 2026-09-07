@@ -36,7 +36,14 @@ on:
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # NOTE: with Angel One configured, backtest pulls up to ~1 year of
+    # history per index/timeframe instead of Yahoo's free ~60-day cap (see
+    # data/angelone_fetcher.py) -- this gives far more trades per strategy
+    # combination to judge, but takes noticeably longer to compute. Bumped
+    # from 90 to 340 min (GitHub's hard cap is 360) to be safe for a full
+    # --timeframe all --index all sweep. Narrow to one timeframe/index via
+    # the workflow_dispatch inputs for a much faster iterative test.
+    timeout-minutes: 340
 
     steps:
       - name: Check out repository

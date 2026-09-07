@@ -85,6 +85,19 @@ STRIKE_STEPS = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50}
 _session_cache = {"client": None, "logged_in_at": None}
 
 
+# Angel's historical-candle endpoint caps how many days you can request in a
+# SINGLE call (confirmed by Angel's own support forum): 100 days for a
+# FIVE_MINUTE interval, 30 days for ONE_MINUTE. Larger windows are fetched by
+# looping over multiple chunks. Kept deliberately conservative (used for
+# 15m/30m/60m too, since those limits aren't publicly documented) rather than
+# risking a rejected request.
+_INTERVAL_MAP = {
+    1: "ONE_MINUTE", 5: "FIVE_MINUTE", 15: "FIFTEEN_MINUTE",
+    30: "THIRTY_MINUTE", 60: "ONE_HOUR",
+}
+_CHUNK_DAYS = {1: 28, 5: 95, 15: 95, 30: 95, 60: 95}
+
+
 def _get_client():
     """Return a logged-in SmartConnect client, reusing the session for the
     lifetime of this process. Angel sessions are valid for the trading day,
@@ -290,3 +303,71 @@ def fetch_live_option_chain_angelone(symbol: str) -> dict:
             "data": data_rows,
         }
     }
+
+
+def fetch_index_history_angelone(symbol: str, interval_min: int, days: int) -> "pd.DataFrame":
+    """
+    Fetch historical index OHLCV candles via Angel One's official historical-
+    data API (getCandleData) -- NOT subject to Yahoo Finance's free-tier
+    ~60-day (5m) / ~7-day (1m) history cap. Angel's own per-request limit is
+    ~100 days for 5m / ~30 days for 1m, so requests for longer windows are
+    split into multiple chunked calls and concatenated.
+
+    Returns the SAME shape as data.fetcher.fetch_index_history(): a
+    DataFrame indexed by tz-aware Asia/Kolkata timestamps, columns
+    open/high/low/close/volume. Raises DataFeedError on failure.
+
+    WHY THIS MATTERS: with only ~60 days of free 5-minute data, most
+    strategy/EMA/timeframe combinations in a backtest see just 1-4 trades --
+    not enough to tell a real edge from noise. Pulling 6-12+ months via this
+    function gives the backtest far more trades to judge each strategy on.
+    """
+    import pandas as pd  # local import: this module is optional/lazy-loaded
+
+    if symbol not in _INDEX_TOKENS:
+        raise DataFeedError(f"No Angel One index-token mapping configured for {symbol}")
+    interval = _INTERVAL_MAP.get(interval_min)
+    if interval is None:
+        raise DataFeedError(f"Unsupported interval {interval_min}m for Angel One historical data")
+
+    client = _get_client()
+    exch, token, _ = _INDEX_TOKENS[symbol]
+    chunk_days = _CHUNK_DAYS.get(interval_min, 28)
+
+    end = datetime.now()
+    start_overall = end - timedelta(days=days)
+
+    all_rows = []
+    chunk_end = end
+    while chunk_end > start_overall:
+        chunk_start = max(start_overall, chunk_end - timedelta(days=chunk_days))
+        params = {
+            "exchange": exch,
+            "symboltoken": token,
+            "interval": interval,
+            "fromdate": chunk_start.strftime("%Y-%m-%d %H:%M"),
+            "todate": chunk_end.strftime("%Y-%m-%d %H:%M"),
+        }
+        try:
+            result = client.getCandleData(params)
+        except Exception as e:
+            raise DataFeedError(f"Angel One getCandleData failed for {symbol} "
+                                 f"({params['fromdate']} to {params['todate']}): {e}") from e
+        if not result or not result.get("status"):
+            raise DataFeedError(f"Angel One getCandleData returned an error for {symbol}: {result}")
+        all_rows.extend(result.get("data") or [])
+        chunk_end = chunk_start
+        time.sleep(0.4)  # stay well under Angel's 3-req/sec limit
+
+    if not all_rows:
+        raise DataFeedError(f"Angel One returned no historical candles for {symbol} at {interval_min}m "
+                             f"over the last {days} days.")
+
+    df = pd.DataFrame(all_rows, columns=["datetime", "open", "high", "low", "close", "volume"])
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.drop_duplicates(subset="datetime").sort_values("datetime").set_index("datetime")
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("Asia/Kolkata")
+    else:
+        df.index = df.index.tz_convert("Asia/Kolkata")
+    return df[["open", "high", "low", "close", "volume"]]
