@@ -85,6 +85,7 @@ def print_first_run_status():
     print(f"Max consecutive losses  : {config.MAX_CONSECUTIVE_LOSSES}")
     print(f"Min signal score        : {config.MIN_SIGNAL_SCORE}/100")
     print(f"Telegram configured     : {'YES' if config.TELEGRAM_ENABLED else 'NO (set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env)'}")
+    print(f"Angel One configured     : {'YES (longer history + cloud-safe option chain)' if config.ANGEL_ENABLED else 'NO (falling back to free yfinance/NSE -- see config.py section 8)'}")
     print("=" * 70)
     print("PAPER TRADING ONLY. No real-money orders will ever be placed.")
     print("=" * 70)
