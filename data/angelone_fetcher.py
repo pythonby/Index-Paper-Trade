@@ -134,7 +134,37 @@ def _get_client():
     _session_cache["client"] = client
     _session_cache["logged_in_at"] = time.time()
     logger.info("Angel One SmartAPI session established.")
+    # Angel's API is known to intermittently reject the very FIRST request
+    # right after login with "Access denied because of exceeding access
+    # rate" even when nowhere near the documented limit (a widely-reported
+    # quirk on Angel's own developer forum, not something under our
+    # control) -- a brief pause here measurably reduces how often that
+    # first call gets hit.
+    time.sleep(1.5)
     return client
+
+
+def _call_with_retry(fn, *args, max_attempts: int = 4, **kwargs):
+    """Retries an Angel One API call with backoff specifically for the
+    "exceeding access rate" error, which Angel's own users report happening
+    intermittently even on legitimate, well-under-the-limit traffic
+    (including the first call of a session). Re-raises immediately for any
+    other kind of failure -- this is not a general-purpose retry, only a
+    workaround for that one known-flaky error."""
+    delay = 2.0
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last_err = e
+            if "exceeding access rate" not in str(e).lower() or attempt == max_attempts:
+                raise
+            logger.warning("Angel One rate-limit hiccup (attempt %d/%d), retrying in %.0fs: %s",
+                            attempt, max_attempts, delay, e)
+            time.sleep(delay)
+            delay *= 2
+    raise last_err
 
 
 def _load_scrip_master() -> list:
@@ -177,7 +207,7 @@ def _parse_expiry(expiry_str: str) -> Optional[date]:
 def _get_spot(client, symbol: str) -> float:
     exch, token, name = _INDEX_TOKENS[symbol]
     try:
-        result = client.getMarketData(mode="LTP", exchangeTokens={exch: [token]})
+        result = _call_with_retry(client.getMarketData, mode="LTP", exchangeTokens={exch: [token]})
         fetched = result.get("data", {}).get("fetched", [])
         if not fetched:
             raise DataFeedError(f"Angel One returned no LTP data for {symbol} index.")
@@ -194,7 +224,7 @@ def _batch_quotes(client, exch: str, tokens: list) -> dict:
     for i in range(0, len(tokens), _QUOTE_BATCH_SIZE):
         chunk = tokens[i:i + _QUOTE_BATCH_SIZE]
         try:
-            result = client.getMarketData(mode="FULL", exchangeTokens={exch: chunk})
+            result = _call_with_retry(client.getMarketData, mode="FULL", exchangeTokens={exch: chunk})
         except Exception as e:
             raise DataFeedError(f"Angel One quote fetch failed: {e}") from e
         for row in result.get("data", {}).get("fetched", []):
@@ -349,7 +379,7 @@ def fetch_index_history_angelone(symbol: str, interval_min: int, days: int) -> "
             "todate": chunk_end.strftime("%Y-%m-%d %H:%M"),
         }
         try:
-            result = client.getCandleData(params)
+            result = _call_with_retry(client.getCandleData, params)
         except Exception as e:
             raise DataFeedError(f"Angel One getCandleData failed for {symbol} "
                                  f"({params['fromdate']} to {params['todate']}): {e}") from e
