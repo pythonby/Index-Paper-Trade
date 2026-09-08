@@ -18,6 +18,7 @@ from datetime import datetime, date
 from typing import Optional
 
 import config
+from utils.timeutils import today_ist
 
 LOT_SIZES = {
     # Approximate NSE lot sizes -- these change periodically with exchange
@@ -154,7 +155,13 @@ def select_live_contract(index: str, option_type: str, option_chain_json: dict) 
     except ValueError:
         return None
 
-    days_to_expiry = (nearest_expiry - datetime.now().date()).days
+    # IST date, not the runner's local date -- on a UTC-clocked cloud
+    # runner (GitHub Actions etc.), datetime.now().date() can be a full day
+    # behind the real IST date for roughly the first 5.5 hours of the IST
+    # day, which would miscalculate days-to-expiry and could select the
+    # wrong contract.
+    today = today_ist()
+    days_to_expiry = (nearest_expiry - today).days
     if not (config.MIN_DAYS_TO_EXPIRY <= days_to_expiry <= config.MAX_DAYS_TO_EXPIRY):
         # roll to next expiry in the list if the nearest one is outside our window
         for exp_str in expiry_dates[1:]:
@@ -162,7 +169,7 @@ def select_live_contract(index: str, option_type: str, option_chain_json: dict) 
                 exp = datetime.strptime(exp_str, "%d-%b-%Y").date()
             except ValueError:
                 continue
-            dte = (exp - datetime.now().date()).days
+            dte = (exp - today).days
             if config.MIN_DAYS_TO_EXPIRY <= dte <= config.MAX_DAYS_TO_EXPIRY:
                 nearest_expiry, days_to_expiry = exp, dte
                 break

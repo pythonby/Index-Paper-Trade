@@ -54,6 +54,7 @@ import requests
 
 import config
 from data.fetcher import DataFeedError
+from utils.timeutils import now_ist
 
 logger = logging.getLogger("data.angelone_fetcher")
 
@@ -254,7 +255,9 @@ def fetch_live_option_chain_angelone(symbol: str) -> dict:
     step = STRIKE_STEPS.get(symbol, 50)
     atm = round(spot / step) * step
 
-    today = date.today()
+    today = now_ist().date()  # IST date, not the runner's (UTC) local date --
+    # same class of bug as above: near midnight IST this could otherwise be
+    # off by a day on a UTC-clocked runner.
     candidates_by_expiry = {}
     for inst in instruments:
         try:
@@ -364,7 +367,15 @@ def fetch_index_history_angelone(symbol: str, interval_min: int, days: int) -> "
     exch, token, _ = _INDEX_TOKENS[symbol]
     chunk_days = _CHUNK_DAYS.get(interval_min, 28)
 
-    end = datetime.now()
+    # CRITICAL: must use IST wall-clock time here, not datetime.now() -- on
+    # GitHub Actions (and most cloud runners) the container clock is UTC,
+    # which is 5.5 hours behind IST. Angel's API interprets fromdate/todate
+    # as IST with no timezone conversion, so passing UTC "now" makes every
+    # request look like it's asking for data from 5.5 hours in the past --
+    # e.g. at 9:57 AM IST (market open ~40 min) this would ask for data as
+    # of 4:27 AM IST (before market opens), silently returning only
+    # YESTERDAY's last candle and making live data look permanently stale.
+    end = now_ist().replace(tzinfo=None)
     start_overall = end - timedelta(days=days)
 
     all_rows = []
