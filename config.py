@@ -183,7 +183,11 @@ TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 # If any of these are missing, the system automatically falls back to the
 # free NSE scraping method (data.fetcher.fetch_live_option_chain_nse).
 ANGEL_API_KEY = os.environ.get("ANGEL_API_KEY", "")
-ANGEL_CLIENT_CODE = os.environ.get("ANGEL_CLIENT_CODE", "")
+# Accept ANGEL_CLIENT_CODE (documented name) or ANGEL_CLIENT_ID (a
+# reasonable alternate name people naturally use) -- avoids a silent,
+# hard-to-spot mismatch between what's in GitHub Secrets and what this
+# code reads.
+ANGEL_CLIENT_CODE = os.environ.get("ANGEL_CLIENT_CODE", "") or os.environ.get("ANGEL_CLIENT_ID", "")
 ANGEL_PASSWORD = os.environ.get("ANGEL_PASSWORD", "")
 ANGEL_TOTP_SECRET = os.environ.get("ANGEL_TOTP_SECRET", "")
 ANGEL_ENABLED = bool(ANGEL_API_KEY and ANGEL_CLIENT_CODE and ANGEL_PASSWORD and ANGEL_TOTP_SECRET)
