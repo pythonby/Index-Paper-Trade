@@ -300,23 +300,26 @@ def _send_end_of_day_report():
     report per timeframe (never mixed together) -- e.g. a 5m report and a
     15m report are two distinct messages, each showing only that
     timeframe's own trades/P&L. Called both on square-off and on graceful
-    shutdown."""
-    import datetime as _dt
+    shutdown.
+
+    IMPORTANT: the weekly/monthly report checks run regardless of whether
+    TODAY had any trades -- they aggregate the whole week/month, which can
+    have trades from earlier days even on a zero-trade Friday. Gating them
+    behind "today had trades" would silently skip that week/month's report
+    forever (this was a real bug -- fixed)."""
     today_str = today_ist().isoformat()
     all_trades = database.fetch_trades(mode="paper_live")
     todays_trades = [t for t in all_trades if str(t.get("entry_time", "")).startswith(today_str)]
 
     if not todays_trades:
         print("No trades were taken today; skipping daily report.")
-        return
-
-    by_timeframe = {}
-    for t in todays_trades:
-        tf = t.get("timeframe_min", "?")
-        by_timeframe.setdefault(tf, []).append(t)
-
-    for tf, trades in sorted(by_timeframe.items(), key=lambda kv: (kv[0] is None, kv[0])):
-        _compute_and_send_period_report(f"DAILY ({tf}m)", trades)
+    else:
+        by_timeframe = {}
+        for t in todays_trades:
+            tf = t.get("timeframe_min", "?")
+            by_timeframe.setdefault(tf, []).append(t)
+        for tf, trades in sorted(by_timeframe.items(), key=lambda kv: (kv[0] is None, kv[0])):
+            _compute_and_send_period_report(f"DAILY ({tf}m)", trades)
 
     _maybe_send_weekly_report()
     _maybe_send_monthly_report()
