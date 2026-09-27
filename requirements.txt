@@ -3,6 +3,7 @@ numpy>=1.24.0
 yfinance>=0.2.40
 requests>=2.31.0
 python-dotenv>=1.0.0
+openpyxl>=3.1.0
 
 # Optional: only needed if you configure Angel One SmartAPI credentials
 # (config.py section 8) for the live option-chain feed. Safe to leave

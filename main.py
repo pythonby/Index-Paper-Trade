@@ -348,6 +348,15 @@ def _send_end_of_day_report():
     _maybe_send_weekly_report()
     _maybe_send_monthly_report()
 
+    try:
+        from reports.dashboard import generate_dashboard
+        generate_dashboard()
+        print("Dashboard regenerated: reports/dashboard.xlsx")
+    except Exception as e:
+        # Dashboard generation is a nice-to-have -- never let it break the
+        # trading loop or block the (already-sent) Telegram reports.
+        print(f"Could not regenerate dashboard.xlsx (non-fatal): {e}")
+
 
 def _entry_date(trade: dict):
     import datetime as _dt
