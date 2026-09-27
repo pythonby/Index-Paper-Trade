@@ -161,6 +161,28 @@ NSE method instead — no code changes needed either way, and no real orders
 are ever placed through Angel One; it's used purely as a market-data source
 for this paper-trading system.
 
+## 7b. Seeing results as one simple table (daily / weekly / monthly)
+
+Telegram sends one message per trade plus separate daily/weekly/monthly
+summaries -- fine for a quick alert, but hard to review as a whole after a
+few days of messages pile up.
+
+For that, two files are kept up to date **in this repo** and committed
+back automatically by the GitHub Actions workflow after every run:
+
+- **`reports/trade_log.csv`** -- one row per completed live paper trade,
+  appended to over time (never overwritten). Open it on github.com (it
+  renders as a clean table automatically) and sort/filter by the `Date`
+  column to see a single day, a week, or a month at a glance. Download it
+  into Excel/Google Sheets any time for pivot tables, charts, etc.
+- **`reports/latest_backtest_summary.csv`** -- the FULL backtest
+  comparison table (every strategy/index/timeframe/EMA combination tested,
+  not just the 15 that fit in a Telegram message), overwritten each time
+  a backtest runs so it always reflects the latest test.
+
+No download needed to just look -- click the file on github.com and GitHub
+renders it as a table in the browser.
+
 ## 7. Getting a Telegram bot token & chat ID (free)
 
 1. Open Telegram, message **@BotFather**, send `/newbot`, follow the

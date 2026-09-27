@@ -27,6 +27,7 @@ from signal.scorer import score_signal
 from risk.manager import DailyRiskState, compute_position_size, update_trailing_stop
 from costs.model import net_pnl as compute_net_pnl
 from notify import telegram
+from reports.csv_log import append_trade_to_csv
 from db import database
 
 logger = logging.getLogger("paper_trading.engine")
@@ -271,6 +272,7 @@ class PaperTradingEngine:
             "reasons": "; ".join(pos["reasons"]),
         }
         database.insert_trade(record)
+        append_trade_to_csv(record)
 
         try:
             telegram.send_exit_notification(record)

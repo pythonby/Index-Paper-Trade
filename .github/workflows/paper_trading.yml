@@ -33,6 +33,13 @@ on:
         default: "all"
         type: string
 
+# Needed so the "commit CSV" steps below can push reports/*.csv back to the
+# repo (see reports/csv_log.py) -- these give you ONE always-up-to-date,
+# clean table viewable straight on github.com instead of piecing results
+# together from many Telegram messages.
+permissions:
+  contents: write
+
 jobs:
   backtest:
     runs-on: ubuntu-latest
@@ -72,6 +79,23 @@ jobs:
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
         run: python -u main.py backtest --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
 
+      - name: Commit updated backtest summary table
+        if: always()
+        run: |
+          git config user.name "nse-paper-bot"
+          git config user.email "actions@github.com"
+          git add reports/latest_backtest_summary.csv
+          if git diff --cached --quiet; then
+            echo "No backtest summary changes to commit."
+            exit 0
+          fi
+          git commit -m "Update backtest summary table [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase && git push && break
+            echo "Push attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done
+
   paper-trade:
     runs-on: ubuntu-latest
     timeout-minutes: 350       # GitHub's hard cap is 360 min (6h) -- stay safely under it
@@ -108,6 +132,23 @@ jobs:
           ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
         run: python -u main.py paper --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
+
+      - name: Commit updated trade log table
+        if: always()
+        run: |
+          git config user.name "nse-paper-bot"
+          git config user.email "actions@github.com"
+          git add reports/trade_log.csv
+          if git diff --cached --quiet; then
+            echo "No new trades to commit."
+            exit 0
+          fi
+          git commit -m "Update trade log [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase && git push && break
+            echo "Push attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done
 
       - name: Persist trade database for next run
         if: always()

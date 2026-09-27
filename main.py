@@ -31,6 +31,7 @@ from data.fetcher import fetch_index_history, DataFeedError
 from backtest.engine import prepare_dataframe, run_backtest
 from validation.walkforward import rolling_walk_forward, summarize_folds
 from reports.performance import compute_metrics, build_comparison_table, build_telegram_summary, is_robust, format_daily_report, format_period_report
+from reports.csv_log import write_backtest_summary_csv
 from strategies.vwap_ema_momentum import VwapEmaMomentum
 from strategies.opening_range_breakout import OpeningRangeBreakout
 from strategies.trend_pullback import TrendPullback
@@ -228,6 +229,7 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
                         metrics = compute_metrics(full_result.trades, full_result.equity_curve, config.STARTING_CAPITAL)
 
                         key = (label, index_name, timeframe_min)
+                        metrics["walk_forward_robust"] = fold_summary["overall_robust"]
                         all_results[key] = metrics
 
                         if fold_summary["overall_robust"]:
@@ -241,6 +243,28 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
     print("=" * 100)
     comparison_table = build_comparison_table(all_results)
     print(comparison_table)
+
+    # Full table (every combination tested, not just Telegram's top-15) written
+    # to reports/latest_backtest_summary.csv -- committed back to the repo by
+    # the GitHub Actions workflow so it's viewable as a clean table straight
+    # on github.com, no screenshots or Telegram scrolling needed.
+    csv_rows = []
+    for (label, index_name, timeframe_min), m in all_results.items():
+        if "(EMA" in label:
+            strat_name, ema_part = label.split(" (EMA", 1)
+            ema_part = "EMA" + ema_part.rstrip(")")
+        else:
+            strat_name, ema_part = label, ""
+        pf = m.get("profit_factor")
+        csv_rows.append({
+            "Strategy": strat_name, "EMA": ema_part, "Index": index_name,
+            "Timeframe": f"{timeframe_min}m", "Trades": m.get("num_trades", 0),
+            "Win Rate %": m.get("win_rate", 0), "Profit Factor": pf if pf is not None else "inf",
+            "Net P&L": m.get("net_pnl", 0),
+            "Walk-Forward Robust": "YES" if m.get("walk_forward_robust") else "NO",
+        })
+    csv_rows.sort(key=lambda r: r["Net P&L"] if isinstance(r["Net P&L"], (int, float)) else -1e18, reverse=True)
+    write_backtest_summary_csv(csv_rows)
 
     print("\n" + "=" * 100)
     if any_robust:
