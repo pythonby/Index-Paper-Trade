@@ -1,28 +1,28 @@
 """
 reports/dashboard.py
 ======================
-Generates reports/dashboard.xlsx from reports/trade_log.csv -- a
-professional-style performance dashboard with two sheets:
+Generates reports/dashboard.xlsx from reports/trade_log.csv, SPLIT BY INDEX:
 
-1. "Monthly Returns" -- a Year x Month grid of % return, colored
-   green/red, with a yearly total column (the same style as a typical
-   strategy-tester monthly-returns table).
-2. "Statistics" -- trade count, win/loss breakdown, averages, largest
-   win/loss, max consecutive wins/losses, max drawdown ($ and %), profit
-   factor, payoff ratio, Sharpe ratio, and recovery factor.
+    Summary        one row per index (NIFTY / BANKNIFTY / FINNIFTY / ALL)
+    NIFTY          monthly-returns grid + full statistics box, NIFTY trades only
+    BANKNIFTY      same, BANKNIFTY trades only
+    FINNIFTY       same, FINNIFTY trades only
+    ALL INDICES    same, everything combined
 
-Regenerated every time the bot runs (called from main.py after the daily
-report) and committed back to the repo by the GitHub Actions workflow
-alongside trade_log.csv, so it's always in sync with the latest trades --
-no manual steps needed.
+Each index sheet has (1) a Year x Month % return grid (green/red, with a
+yearly total) and (2) a statistics box: trades, winners/losers, averages,
+largest win/loss, consecutive wins/losses, drawdown, profit factor, payoff
+ratio, recovery factor, Sharpe, transaction costs.
 
-Needs at least a few trades to be meaningful; with very few trades, most
-of the monthly grid will just be blank and the statistics will carry the
-same "too small a sample" caveat as everywhere else in this codebase.
+Regenerated every time the bot runs (main.py -> after the daily report) and
+committed back to the repo by the GitHub Actions workflow. Needs many
+trades over many weeks to fill the grid; with a handful of trades the
+numbers are NOT statistically reliable, and the file says so.
 """
 
 import csv
 import os
+import statistics
 from collections import defaultdict
 from datetime import datetime
 
@@ -30,8 +30,15 @@ import config
 
 _TRADE_LOG_PATH = os.path.join(os.path.dirname(__file__), "trade_log.csv")
 _DASHBOARD_PATH = os.path.join(os.path.dirname(__file__), "dashboard.xlsx")
-
 MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+# ----------------------------------------------------------------- reading
+def _f(x, default=0.0):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
 
 
 def _read_trades(path: str):
@@ -39,226 +46,385 @@ def _read_trades(path: str):
         return []
     with open(path, newline="") as f:
         rows = list(csv.DictReader(f))
+    out = []
     for r in rows:
-        r["_net"] = float(r["Net P&L"]) if r.get("Net P&L") not in (None, "") else 0.0
         try:
             r["_date"] = datetime.strptime(r["Date"], "%Y-%m-%d").date()
-        except (ValueError, KeyError):
-            r["_date"] = None
-    return [r for r in rows if r["_date"] is not None]
+        except (ValueError, KeyError, TypeError):
+            continue
+        r["_net"] = _f(r.get("Net P&L"))
+        r["_costs"] = _f(r.get("Costs"))
+        r["_capital_used"] = _f(r.get("Entry")) * _f(r.get("Qty"))
+        r["_pct"] = (r["_net"] / r["_capital_used"] * 100) if r["_capital_used"] else 0.0
+        r["_sort"] = (r["_date"], r.get("Time", ""))
+        out.append(r)
+    out.sort(key=lambda r: r["_sort"])
+    return out
 
 
+# ------------------------------------------------------------------- maths
 def _daily_pnl(trades):
-    """{date: net_pnl_sum} across all trades that day, sorted by date."""
-    by_day = defaultdict(float)
+    d = defaultdict(float)
     for t in trades:
-        by_day[t["_date"]] += t["_net"]
-    return dict(sorted(by_day.items()))
+        d[t["_date"]] += t["_net"]
+    return dict(sorted(d.items()))
 
 
-def _monthly_returns_pct(daily_pnl: dict, starting_capital: float):
-    """Returns {year: {month: pct_return}} using an equity curve that
-    carries forward day to day (so a month's % return is relative to the
-    capital level at the START of that month, compounding -- same
-    convention as the example screenshot)."""
-    capital = starting_capital
-    month_start_capital = {}
-    month_pnl = defaultdict(float)
+def _monthly_grid(daily_pnl, start_cap):
+    """{year: {month: pct}} -- each month's P&L / capital at that month's start."""
+    cap = start_cap
+    month_start, month_pnl = {}, defaultdict(float)
     for d, pnl in daily_pnl.items():
-        key = (d.year, d.month)
-        if key not in month_start_capital:
-            month_start_capital[key] = capital
-        month_pnl[key] += pnl
-        capital += pnl
-
+        k = (d.year, d.month)
+        month_start.setdefault(k, cap)
+        month_pnl[k] += pnl
+        cap += pnl
     grid = defaultdict(dict)
-    for (year, month), pnl in month_pnl.items():
-        start_cap = month_start_capital[(year, month)]
-        grid[year][month] = (pnl / start_cap * 100) if start_cap else 0.0
-    return grid, capital
+    for (y, m), pnl in month_pnl.items():
+        grid[y][m] = (pnl / month_start[(y, m)] * 100) if month_start[(y, m)] else 0.0
+    return grid
 
 
-def _max_consecutive(results: list, target: bool) -> int:
-    """results: list of bool (True=win). Longest run of `target`."""
+def _max_run(flags, target):
     best = cur = 0
-    for r in results:
-        if r == target:
-            cur += 1
-            best = max(best, cur)
-        else:
-            cur = 0
+    for f in flags:
+        cur = cur + 1 if f == target else 0
+        best = max(best, cur)
     return best
 
 
-def _max_drawdown(daily_pnl: dict, starting_capital: float):
-    """Returns (max_dd_rupees, max_dd_pct) off the running equity curve."""
-    capital = starting_capital
-    peak = starting_capital
-    max_dd_rs, max_dd_pct = 0.0, 0.0
-    for _, pnl in daily_pnl.items():
-        capital += pnl
-        peak = max(peak, capital)
-        dd_rs = peak - capital
-        dd_pct = (dd_rs / peak * 100) if peak else 0.0
-        max_dd_rs = max(max_dd_rs, dd_rs)
-        max_dd_pct = max(max_dd_pct, dd_pct)
-    return max_dd_rs, max_dd_pct
+def _drawdown(trades, start_cap):
+    """Trade-by-trade equity curve -> (max_dd_rs, max_dd_pct)."""
+    cap = peak = start_cap
+    dd_rs = dd_pct = 0.0
+    for t in trades:
+        cap += t["_net"]
+        peak = max(peak, cap)
+        cur = peak - cap
+        dd_rs = max(dd_rs, cur)
+        dd_pct = max(dd_pct, cur / peak * 100 if peak else 0.0)
+    return dd_rs, dd_pct
 
 
-def _sharpe(daily_returns_pct: list) -> float:
-    """Annualized Sharpe on daily %returns, 0% risk-free rate, ~252
-    trading days/year. Returns None if fewer than 2 data points."""
-    if len(daily_returns_pct) < 2:
+def _sharpe(daily_pnl, start_cap):
+    cap, rets = start_cap, []
+    for pnl in daily_pnl.values():
+        rets.append(pnl / cap * 100 if cap else 0.0)
+        cap += pnl
+    if len(rets) < 2:
         return None
-    import statistics
-    mean = statistics.mean(daily_returns_pct)
-    stdev = statistics.pstdev(daily_returns_pct)
-    if stdev == 0:
-        return None
-    return round((mean / stdev) * (252 ** 0.5), 2)
+    sd = statistics.pstdev(rets)
+    return round(statistics.mean(rets) / sd * (252 ** 0.5), 2) if sd else None
+
+
+def compute_stats(trades, start_cap):
+    """Returns an ordered list of (label, value, fmt, tone). fmt: 'int', 'money',
+    'pct', 'ratio', 'text'.  tone: 'good' | 'bad' | None (colors the value)."""
+    if not trades:
+        return []
+    nets = [t["_net"] for t in trades]
+    wins = [t for t in trades if t["_net"] > 0]
+    losses = [t for t in trades if t["_net"] <= 0]
+    win_pnl = sum(t["_net"] for t in wins)
+    loss_pnl = sum(t["_net"] for t in losses)          # negative number
+    dpnl = _daily_pnl(trades)
+    dd_rs, dd_pct = _drawdown(trades, start_cap)
+    net = sum(nets)
+    pf = (win_pnl / abs(loss_pnl)) if loss_pnl else (None if not win_pnl else float("inf"))
+    payoff = ((win_pnl / len(wins)) / abs(loss_pnl / len(losses))) if wins and losses and loss_pnl else None
+    recov = (net / dd_rs) if dd_rs > 0 else None
+    flags = [t["_net"] > 0 for t in trades]
+
+    def avg(lst):
+        return sum(lst) / len(lst) if lst else 0.0
+
+    return [
+        ("All trades", len(trades), "int", None),
+        ("Winners", f"{len(wins)} ({len(wins) / len(trades) * 100:.1f}%)", "text", None),
+        ("Losers", f"{len(losses)} ({len(losses) / len(trades) * 100:.1f}%)", "text", None),
+        ("Net P&L (Rs)", round(net, 2), "money", "good" if net >= 0 else "bad"),
+        ("Total Profit (Rs)", round(win_pnl, 2), "money", "good"),
+        ("Total Loss (Rs)", round(loss_pnl, 2), "money", "bad"),
+        ("Transaction costs (Rs)", round(sum(t["_costs"] for t in trades), 2), "money", None),
+        ("Avg Profit/Loss per trade (Rs)", round(net / len(trades), 2), "money", "good" if net >= 0 else "bad"),
+        ("Avg Profit/Loss per trade (% of premium)", round(avg([t["_pct"] for t in trades]), 2), "pct", None),
+        ("Avg Win (Rs)", round(avg([t["_net"] for t in wins]), 2), "money", "good"),
+        ("Avg Win (% of premium)", round(avg([t["_pct"] for t in wins]), 2), "pct", "good"),
+        ("Avg Loss (Rs)", round(avg([t["_net"] for t in losses]), 2), "money", "bad"),
+        ("Avg Loss (% of premium)", round(avg([t["_pct"] for t in losses]), 2), "pct", "bad"),
+        ("Largest Win (Rs)", round(max(nets), 2), "money", "good"),
+        ("Largest Loss (Rs)", round(min(nets), 2), "money", "bad"),
+        ("Max Consecutive Wins", _max_run(flags, True), "int", None),
+        ("Max Consecutive Losses", _max_run(flags, False), "int", None),
+        ("Max trade drawdown (Rs)", round(min(nets), 2) if min(nets) < 0 else 0, "money", "bad"),
+        ("Max system drawdown (Rs)", round(-dd_rs, 2), "money", "bad"),
+        ("Max system drawdown (%)", round(-dd_pct, 2), "pct", "bad"),
+        ("Recovery Factor", round(recov, 2) if recov is not None else "N/A", "ratio", None),
+        ("Profit Factor", ("inf" if pf == float("inf") else round(pf, 2)) if pf is not None else "N/A", "ratio", None),
+        ("Payoff Ratio (avg win / avg loss)", round(payoff, 2) if payoff is not None else "N/A", "ratio", None),
+        ("Sharpe Ratio (annualized)", _sharpe(dpnl, start_cap) if _sharpe(dpnl, start_cap) is not None
+         else "N/A (needs 2+ trading days)", "ratio", None),
+    ]
+
+
+# ------------------------------------------------------------------ writing
+def _styles():
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    thin = Side(style="thin", color="B7B7B7")
+    return {
+        "hfill": PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid"),
+        "hfont": Font(name="Arial", bold=True, color="FFFFFF"),
+        "bold": Font(name="Arial", bold=True),
+        "norm": Font(name="Arial"),
+        "good": Font(name="Arial", color="0B8A00"),
+        "bad": Font(name="Arial", color="C00000"),
+        "note": Font(name="Arial", italic=True, size=9, color="666666"),
+        "title": Font(name="Arial", bold=True, size=13),
+        "border": Border(left=thin, right=thin, top=thin, bottom=thin),
+        "center": Alignment(horizontal="center"),
+    }
+
+
+def _period_data(daily_pnl, start_cap):
+    """Builds daily / weekly / monthly P&L buckets off one running equity curve.
+    Every bucket keeps (pnl_rs, capital_at_its_start) so return % = pnl / capital."""
+    from datetime import timedelta
+    cap_before, cap = {}, start_cap
+    for d, p in daily_pnl.items():
+        cap_before[d] = cap
+        cap += p
+    daily = {d: (p, cap_before[d]) for d, p in daily_pnl.items()}
+
+    def bucket(keyfn):
+        out = {}
+        for d, p in daily_pnl.items():
+            k = keyfn(d)
+            if k in out:
+                out[k][0] += p
+            else:
+                out[k] = [p, cap_before[d]]
+        return out
+
+    monday = lambda d: d - timedelta(days=d.weekday())
+    return {
+        "daily": daily,                                              # date -> (pnl, cap)
+        "week": bucket(monday),                                      # monday -> [pnl, cap]  (full Mon-Fri week)
+        "week_in_month": bucket(lambda d: (d.year, d.month, monday(d))),  # weeks split at month edges
+        "month": bucket(lambda d: (d.year, d.month)),
+    }
+
+
+def _write_index_sheet(ws, title, trades, start_cap, S):
+    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import PatternFill, Alignment
+    GREEN_BG = PatternFill(start_color="E6F4EA", end_color="E6F4EA", fill_type="solid")
+    RED_BG = PatternFill(start_color="FDE8E8", end_color="FDE8E8", fill_type="solid")
+
+    ws["A1"] = f"{title} -- PAPER TRADE, NOT REAL MONEY"
+    ws["A1"].font = S["title"]
+    ws.column_dimensions["A"].width = 40
+    for i in range(2, 16):
+        ws.column_dimensions[get_column_letter(i)].width = 10
+    for col in ("H", "I", "O"):
+        ws.column_dimensions[col].width = 15   # "Month P&L (Rs)" / "Week P&L (Rs)" headers
+
+    if not trades:
+        ws["A3"] = "No trades yet for this index -- this fills in automatically as the bot trades."
+        ws["A3"].font = S["note"]
+        return
+
+    def head(row, labels):
+        for c, h in enumerate(labels, start=1):
+            cell = ws.cell(row=row, column=c, value=h)
+            cell.fill, cell.font, cell.alignment, cell.border = S["hfill"], S["hfont"], S["center"], S["border"]
+
+    def put_pct(row, col, pnl, cap, bold=False):
+        cell = ws.cell(row=row, column=col)
+        cell.border = S["border"]
+        if pnl is None:
+            return
+        pct = pnl / cap if cap else 0.0
+        cell.value = pct
+        cell.number_format = "0.0%"
+        cell.font = S["good"] if pct >= 0 else S["bad"]
+        cell.fill = GREEN_BG if pct >= 0 else RED_BG
+        if bold:
+            from openpyxl.styles import Font
+            cell.font = Font(name="Arial", bold=True, color="0B8A00" if pct >= 0 else "C00000")
+
+    def put_rs(row, col, pnl):
+        cell = ws.cell(row=row, column=col)
+        cell.border = S["border"]
+        if pnl is None:
+            return
+        cell.value = round(pnl, 2)
+        cell.number_format = "#,##0;-#,##0"
+        cell.font = S["good"] if pnl >= 0 else S["bad"]
+
+    def label(row, text):
+        c = ws.cell(row=row, column=1, value=text)
+        c.font, c.border = S["bold"], S["border"]
+
+    pd_ = _period_data(_daily_pnl(trades), start_cap)
+    r = 3
+
+    # ================= MONTHLY (Year x Month) =================
+    ws.cell(row=r, column=1, value="MONTHLY returns (% of capital at start of month)").font = S["bold"]
+    r += 1
+    head(r, ["Year"] + MONTH_NAMES + ["Yr %", "Yr P&L (Rs)"])
+    r += 1
+    years = sorted({y for (y, m) in pd_["month"]})
+    col_pcts = defaultdict(list)
+    for y in years:
+        label(r, y)
+        growth, year_rs = 1.0, 0.0
+        for m in range(1, 13):
+            b = pd_["month"].get((y, m))
+            if b:
+                put_pct(r, 1 + m, b[0], b[1])
+                growth *= 1 + b[0] / b[1] if b[1] else 1
+                year_rs += b[0]
+                col_pcts[m].append(b[0] / b[1] if b[1] else 0.0)
+            else:
+                ws.cell(row=r, column=1 + m).border = S["border"]
+        c = ws.cell(row=r, column=14, value=growth - 1)
+        c.number_format, c.border = "0.0%", S["border"]
+        c.font = S["good"] if growth >= 1 else S["bad"]
+        put_rs(r, 15, year_rs)
+        r += 1
+    label(r, "Avg")
+    for m in range(1, 13):
+        c = ws.cell(row=r, column=1 + m)
+        c.border = S["border"]
+        if col_pcts[m]:
+            v = sum(col_pcts[m]) / len(col_pcts[m])
+            c.value, c.number_format = v, "0.0%"
+            c.font = S["good"] if v >= 0 else S["bad"]
+    r += 2
+
+    # ================= WEEKLY (Month x W1..W6) =================
+    ws.cell(row=r, column=1,
+            value="WEEKLY returns (% of capital at start of that week; weeks split at month edges)").font = S["bold"]
+    r += 1
+    head(r, ["Month"] + [f"W{i}" for i in range(1, 7)] + ["Month %", "Month P&L (Rs)"])
+    r += 1
+    for (y, m) in sorted(pd_["month"]):
+        label(r, f"{y}-{MONTH_NAMES[m - 1]}")
+        weeks = sorted(k[2] for k in pd_["week_in_month"] if k[0] == y and k[1] == m)
+        for i, wk in enumerate(weeks[:6]):
+            b = pd_["week_in_month"][(y, m, wk)]
+            put_pct(r, 2 + i, b[0], b[1])
+        for i in range(len(weeks), 6):
+            ws.cell(row=r, column=2 + i).border = S["border"]
+        mb = pd_["month"][(y, m)]
+        put_pct(r, 8, mb[0], mb[1], bold=True)
+        put_rs(r, 9, mb[0])
+        r += 1
+    r += 1
+
+    # ================= DAILY (Week x Mon..Fri) =================
+    ws.cell(row=r, column=1,
+            value="DAILY returns (% of capital at start of that day; blank = no trade that day)").font = S["bold"]
+    r += 1
+    head(r, ["Week starting (Mon)", "Mon", "Tue", "Wed", "Thu", "Fri", "Week %", "Week P&L (Rs)"])
+    r += 1
+    from datetime import timedelta
+    for wk in sorted(pd_["week"]):
+        label(r, wk.strftime("%d-%b-%Y"))
+        for i in range(5):
+            day = wk + timedelta(days=i)
+            if day in pd_["daily"]:
+                put_pct(r, 2 + i, *pd_["daily"][day])
+            else:
+                ws.cell(row=r, column=2 + i).border = S["border"]
+        wb_ = pd_["week"][wk]
+        put_pct(r, 7, wb_[0], wb_[1], bold=True)
+        put_rs(r, 8, wb_[0])
+        r += 1
+    r += 1
+
+    # ================= STATISTICS =================
+    ws.cell(row=r, column=1, value="STATISTICS (all trades for this index)").font = S["bold"]
+    r += 1
+    for lab, val, fmt, tone in compute_stats(trades, start_cap):
+        lc = ws.cell(row=r, column=1, value=lab)
+        vc = ws.cell(row=r, column=2, value=val)
+        lc.font, lc.border, vc.border = S["bold"], S["border"], S["border"]
+        vc.font = S.get(tone, S["norm"]) if tone else S["norm"]
+        vc.alignment = Alignment(horizontal="right")
+        if isinstance(val, (int, float)):
+            vc.number_format = {"money": "#,##0.00;-#,##0.00", "pct": '0.00"%"', "ratio": "0.00", "int": "0"}.get(fmt, "General")
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
+        r += 1
+    r += 1
+    ws.cell(row=r, column=1,
+            value="Caveat: with only a handful of trades these numbers (Sharpe, profit factor, drawdown %) "
+                  "are not statistically reliable. Watch this over weeks/months before drawing conclusions.").font = S["note"]
 
 
 def generate_dashboard(trade_log_path: str = None, out_path: str = None, starting_capital: float = None):
     import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
-    from openpyxl.formatting.rule import ColorScaleRule
-
     trade_log_path = trade_log_path or _TRADE_LOG_PATH
     out_path = out_path or _DASHBOARD_PATH
-    starting_capital = starting_capital or config.STARTING_CAPITAL
+    start_cap = starting_capital or config.STARTING_CAPITAL
+    S = _styles()
 
     trades = _read_trades(trade_log_path)
-
-    ARIAL = "Arial"
-    HEADER_FILL = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    HEADER_FONT = Font(name=ARIAL, bold=True, color="FFFFFF")
-    THIN = Side(style="thin", color="B7B7B7")
-    BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-    GREEN = Font(name=ARIAL, color="0B8A00")
-    RED = Font(name=ARIAL, color="C00000")
+    by_index = defaultdict(list)
+    for t in trades:
+        by_index[(t.get("Index") or "").upper()].append(t)
 
     wb = openpyxl.Workbook()
+    ws0 = wb.active
+    ws0.title = "Summary"
+    ws0["A1"] = "Summary by index -- PAPER TRADE, NOT REAL MONEY"
+    ws0["A1"].font = S["title"]
+    heads = ["Index", "Trades", "Win %", "Net P&L (Rs)", "Profit Factor", "Max DD (%)", "Avg P/L per trade (Rs)"]
+    for c, h in enumerate(heads, start=1):
+        cell = ws0.cell(row=3, column=c, value=h)
+        cell.fill, cell.font, cell.alignment, cell.border = S["hfill"], S["hfont"], S["center"], S["border"]
+        ws0.column_dimensions[chr(64 + c)].width = 22 if c == 7 else 15
 
-    # ---------------- Sheet 1: Monthly Returns ----------------
-    ws1 = wb.active
-    ws1.title = "Monthly Returns"
-    ws1["A1"] = "Monthly Returns (%) -- PAPER TRADE, NOT REAL MONEY"
-    ws1["A1"].font = Font(name=ARIAL, bold=True, size=13)
+    groups = [(name, by_index.get(name, [])) for name in config.INSTRUMENTS]
+    groups.append(("ALL INDICES", trades))
+    for i, (name, tr) in enumerate(groups):
+        r = 4 + i
+        ws0.cell(row=r, column=1, value=name).font = S["bold"]
+        if tr:
+            nets = [t["_net"] for t in tr]
+            wins = [n for n in nets if n > 0]
+            loss = abs(sum(n for n in nets if n <= 0))
+            pf = (sum(wins) / loss) if loss else ("inf" if wins else "N/A")
+            _, dd_pct = _drawdown(tr, start_cap)
+            vals = [len(tr), len(wins) / len(tr), round(sum(nets), 2), pf if isinstance(pf, str) else round(pf, 2),
+                    -dd_pct / 100, round(sum(nets) / len(tr), 2)]
+            fmts = ["0", "0.0%", "#,##0.00;-#,##0.00", "0.00", "0.00%", "#,##0.00;-#,##0.00"]
+        else:
+            vals, fmts = ["-"] * 6, ["General"] * 6
+            vals[0] = 0
+        for c, (v, f) in enumerate(zip(vals, fmts), start=2):
+            cell = ws0.cell(row=r, column=c, value=v)
+            cell.number_format, cell.border, cell.font = f, S["border"], S["norm"]
+            if c == 4 and isinstance(v, (int, float)):
+                cell.font = S["good"] if v >= 0 else S["bad"]
+        ws0.cell(row=r, column=1).border = S["border"]
+    ws0.cell(row=4 + len(groups) + 1, column=1,
+             value="Each index has its own sheet with the monthly-returns grid and full statistics.").font = S["note"]
 
-    daily_pnl = _daily_pnl(trades)
-    if not daily_pnl:
-        ws1["A3"] = "No trades yet -- this fills in automatically as the bot trades."
-        ws1["A3"].font = Font(name=ARIAL, italic=True)
-    else:
-        grid, _ = _monthly_returns_pct(daily_pnl, starting_capital)
-        header_row = 3
-        ws1.cell(row=header_row, column=1, value="Year")
-        for m in range(12):
-            ws1.cell(row=header_row, column=2 + m, value=MONTH_NAMES[m])
-        ws1.cell(row=header_row, column=14, value="Year %")
-        for c in range(1, 15):
-            ws1.cell(row=header_row, column=c).fill = HEADER_FILL
-            ws1.cell(row=header_row, column=c).font = HEADER_FONT
-            ws1.cell(row=header_row, column=c).alignment = Alignment(horizontal="center")
-            ws1.cell(row=header_row, column=c).border = BORDER
+    for name, tr in groups:
+        ws = wb.create_sheet(name)
+        _write_index_sheet(ws, name, tr, start_cap, S)
 
-        for i, year in enumerate(sorted(grid.keys())):
-            r = header_row + 1 + i
-            ws1.cell(row=r, column=1, value=year).font = Font(name=ARIAL, bold=True)
-            year_total = 1.0
-            for m in range(1, 13):
-                pct = grid[year].get(m)
-                cell = ws1.cell(row=r, column=1 + m)
-                cell.border = BORDER
-                if pct is not None:
-                    cell.value = round(pct, 1) / 100
-                    cell.number_format = "0.0%"
-                    cell.font = GREEN if pct >= 0 else RED
-                    year_total *= (1 + pct / 100)
-            yr_cell = ws1.cell(row=r, column=14, value=year_total - 1)
-            yr_cell.number_format = "0.0%"
-            yr_cell.font = Font(name=ARIAL, bold=True)
-            yr_cell.border = BORDER
-            ws1.cell(row=r, column=1).border = BORDER
-
-        widths = [8] + [8] * 12 + [10]
-        for i, w in enumerate(widths, start=1):
-            ws1.column_dimensions[get_column_letter(i)].width = w
-
-    # ---------------- Sheet 2: Statistics ----------------
-    ws2 = wb.create_sheet("Statistics")
-    ws2["A1"] = "Trade Statistics -- PAPER TRADE, NOT REAL MONEY"
-    ws2["A1"].font = Font(name=ARIAL, bold=True, size=13)
-
-    if not trades:
-        ws2["A3"] = "No trades yet."
-        ws2["A3"].font = Font(name=ARIAL, italic=True)
-    else:
-        nets = [t["_net"] for t in trades]
-        wins = [n for n in nets if n > 0]
-        losses = [n for n in nets if n <= 0]
-        results_bool = [n > 0 for n in nets]
-        gross_profit = sum(wins)
-        gross_loss = abs(sum(losses))
-        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0)
-        payoff_ratio = (sum(wins) / len(wins)) / abs(sum(losses) / len(losses)) if wins and losses else None
-        max_dd_rs, max_dd_pct = _max_drawdown(daily_pnl, starting_capital)
-        net_total = sum(nets)
-        recovery_factor = (net_total / max_dd_rs) if max_dd_rs > 0 else None
-
-        daily_returns_pct = []
-        cap = starting_capital
-        for _, pnl in daily_pnl.items():
-            daily_returns_pct.append(pnl / cap * 100 if cap else 0.0)
-            cap += pnl
-        sharpe = _sharpe(daily_returns_pct)
-
-        rows = [
-            ("All trades", len(trades)),
-            ("Winners", f"{len(wins)} ({len(wins)/len(trades)*100:.1f}%)"),
-            ("Losers", f"{len(losses)} ({len(losses)/len(trades)*100:.1f}%)"),
-            ("Avg Win (Rs)", round(sum(wins)/len(wins), 2) if wins else 0),
-            ("Avg Loss (Rs)", round(sum(losses)/len(losses), 2) if losses else 0),
-            ("Largest Win (Rs)", round(max(nets), 2)),
-            ("Largest Loss (Rs)", round(min(nets), 2)),
-            ("Max Consecutive Wins", _max_consecutive(results_bool, True)),
-            ("Max Consecutive Losses", _max_consecutive(results_bool, False)),
-            ("Net P&L (Rs)", round(net_total, 2)),
-            ("Max Drawdown (Rs)", round(max_dd_rs, 2)),
-            ("Max Drawdown (%)", f"{max_dd_pct:.2f}%"),
-            ("Profit Factor", round(profit_factor, 2) if profit_factor != float("inf") else "inf"),
-            ("Payoff Ratio", round(payoff_ratio, 2) if payoff_ratio is not None else "N/A"),
-            ("Recovery Factor", round(recovery_factor, 2) if recovery_factor is not None else "N/A"),
-            ("Sharpe Ratio (annualized)", sharpe if sharpe is not None else "N/A (need 2+ trading days)"),
-        ]
-        r0 = 3
-        for i, (label, val) in enumerate(rows):
-            lr = r0 + i
-            ws2.cell(row=lr, column=1, value=label).font = Font(name=ARIAL, bold=True)
-            vcell = ws2.cell(row=lr, column=2, value=val)
-            vcell.font = Font(name=ARIAL)
-            if isinstance(val, (int, float)) and label in ("Net P&L (Rs)", "Avg Win (Rs)", "Largest Win (Rs)"):
-                vcell.font = GREEN
-            elif isinstance(val, (int, float)) and label in ("Avg Loss (Rs)", "Largest Loss (Rs)", "Max Drawdown (Rs)"):
-                vcell.font = RED
-            ws2.cell(row=lr, column=1).border = BORDER
-            ws2.cell(row=lr, column=2).border = BORDER
-
-        note_row = r0 + len(rows) + 2
-        ws2.cell(row=note_row, column=1,
-            value="Caveat: with only a handful of trades, these numbers (especially Sharpe, "
-                  "profit factor, drawdown %) are not statistically reliable yet. Treat this as "
-                  "a live-updating dashboard to watch over weeks, not a verdict today.")
-        ws2.cell(row=note_row, column=1).font = Font(name=ARIAL, italic=True, size=9, color="666666")
-
-        ws2.column_dimensions["A"].width = 26
-        ws2.column_dimensions["B"].width = 22
+    from openpyxl.worksheet.properties import PageSetupProperties
+    for ws in wb.worksheets:                      # tidy printing / PDF export
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
 
     wb.save(out_path)
     return out_path
 
 
 if __name__ == "__main__":
-    path = generate_dashboard()
-    print(f"Dashboard written to {path}")
+    print("Dashboard written to", generate_dashboard())
