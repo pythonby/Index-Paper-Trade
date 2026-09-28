@@ -81,17 +81,20 @@ jobs:
 
       - name: Commit updated backtest summary table
         if: always()
+        continue-on-error: true   # a reporting/commit hiccup must never turn the whole run red
         run: |
           git config user.name "nse-paper-bot"
           git config user.email "actions@github.com"
-          git add reports/latest_backtest_summary.csv
+          # "git add <file>" exits 128 if the file doesn't exist (e.g. backtest
+          # produced no rows) -- adding the whole folder never errors on that.
+          git add reports/ || true
           if git diff --cached --quiet; then
             echo "No backtest summary changes to commit."
             exit 0
           fi
           git commit -m "Update backtest summary table [skip ci]"
           for i in 1 2 3; do
-            git pull --rebase && git push && break
+            git pull --rebase --autostash && git push && break
             echo "Push attempt $i failed, retrying..."
             sleep $((i * 5))
           done
@@ -135,17 +138,20 @@ jobs:
 
       - name: Commit updated trade log table
         if: always()
+        continue-on-error: true   # a reporting/commit hiccup must never turn the whole run red
         run: |
           git config user.name "nse-paper-bot"
           git config user.email "actions@github.com"
-          git add reports/trade_log.csv reports/dashboard.xlsx
+          # Root cause of the earlier "exit code 128": naming files that don't
+          # exist yet (no trades that day / weekend) makes git add fail.
+          git add reports/ || true
           if git diff --cached --quiet; then
             echo "No new trades to commit."
             exit 0
           fi
           git commit -m "Update trade log [skip ci]"
           for i in 1 2 3; do
-            git pull --rebase && git push && break
+            git pull --rebase --autostash && git push && break
             echo "Push attempt $i failed, retrying..."
             sleep $((i * 5))
           done
