@@ -538,11 +538,29 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     setup_logging()
-    database.init_db()
 
-    if args.mode == "backtest":
-        run_backtest_mode(args.timeframe, args.index)
-    elif args.mode == "paper":
-        run_paper_trading_mode(args.timeframe, args.index)
-    elif args.mode == "status":
-        print_first_run_status()
+    try:
+        database.init_db()
+        if args.mode == "backtest":
+            run_backtest_mode(args.timeframe, args.index)
+        elif args.mode == "paper":
+            run_paper_trading_mode(args.timeframe, args.index)
+        elif args.mode == "status":
+            print_first_run_status()
+    except KeyboardInterrupt:
+        raise
+    except Exception as _crash:
+        # Any unexpected crash: print the full traceback (shows in the GitHub
+        # Actions log) AND send the tail of it to Telegram, so the real cause
+        # reaches you without digging through GitHub logs. Then exit non-zero
+        # so the run still shows as failed.
+        import traceback as _tb
+        full = _tb.format_exc()
+        print(full)
+        try:
+            tail = full[-1500:]
+            telegram.send_alert(f"BOT CRASHED ({args.mode} mode)\n"
+                                f"{type(_crash).__name__}: {str(_crash)[:300]}\n\n{tail}")
+        except Exception as _e:
+            print(f"(could not send crash alert to Telegram: {_e})")
+        raise SystemExit(1)
