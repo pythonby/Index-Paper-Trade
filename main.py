@@ -31,7 +31,7 @@ from data.fetcher import fetch_index_history, DataFeedError
 from backtest.engine import prepare_dataframe, run_backtest
 from validation.walkforward import rolling_walk_forward, summarize_folds
 from reports.performance import compute_metrics, build_comparison_table, build_telegram_summary, is_robust, format_daily_report, format_period_report
-from reports.csv_log import write_backtest_summary_csv
+from reports.csv_log import write_backtest_summary_csv, write_backtest_summary_xlsx
 from strategies.vwap_ema_momentum import VwapEmaMomentum
 from strategies.opening_range_breakout import OpeningRangeBreakout
 from strategies.trend_pullback import TrendPullback
@@ -265,6 +265,7 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         })
     csv_rows.sort(key=lambda r: r["Net P&L"] if isinstance(r["Net P&L"], (int, float)) else -1e18, reverse=True)
     write_backtest_summary_csv(csv_rows)
+    write_backtest_summary_xlsx(csv_rows)
 
     print("\n" + "=" * 100)
     if any_robust:
