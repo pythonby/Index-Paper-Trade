@@ -86,7 +86,61 @@ def write_backtest_summary_csv(rows: list, path: str = None):
         logging.getLogger("reports.csv_log").warning("Could not write latest_backtest_summary.csv: %s", e)
 
 
-_BACKTEST_XLSX_PATH = os.path.join(os.path.dirname(__file__), "latest_backtest_summary.xlsx")
+_BACKTEST_BEST_TRADES_PATH = os.path.join(os.path.dirname(__file__), "backtest_best_trades.csv")
+_BACKTEST_BEST_TRADES_COLUMNS = ["Date", "Index", "Strategy", "Net P&L", "Costs", "Capital Used"]
+
+
+def write_backtest_best_trades_csv(best_trades_by_index: dict, labels_by_index: dict, path: str = None):
+    """Persists the raw, per-trade records of each index's single best
+    backtest combo (see main.py's call site) so that dashboard.xlsx can be
+    rebuilt with BOTH live-trading AND backtest sheets by EITHER the
+    backtest job or the paper-trade job -- whichever runs, since both check
+    out the same repo state and this file travels with it. OVERWRITTEN each
+    time a backtest runs."""
+    path = path or _BACKTEST_BEST_TRADES_PATH
+    try:
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=_BACKTEST_BEST_TRADES_COLUMNS)
+            writer.writeheader()
+            for index_name, trades in best_trades_by_index.items():
+                label = labels_by_index.get(index_name, "")
+                for t in trades:
+                    writer.writerow({
+                        "Date": t["_date"].isoformat(), "Index": index_name, "Strategy": label,
+                        "Net P&L": round(t["_net"], 2), "Costs": round(t["_costs"], 2),
+                        "Capital Used": round(t["_capital_used"], 2),
+                    })
+    except Exception as e:
+        import logging
+        logging.getLogger("reports.csv_log").warning("Could not write backtest_best_trades.csv: %s", e)
+
+
+def read_backtest_best_trades_csv(path: str = None):
+    """Returns (trades_by_index, labels_by_index) -- the inverse of
+    write_backtest_best_trades_csv(), in the same adapted-trade-dict shape
+    reports.dashboard functions expect (_date/_net/_costs/_capital_used/_pct)."""
+    from datetime import datetime
+    path = path or _BACKTEST_BEST_TRADES_PATH
+    trades_by_index, labels_by_index = {}, {}
+    if not os.path.exists(path):
+        return trades_by_index, labels_by_index
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                idx = row["Index"]
+                labels_by_index[idx] = row.get("Strategy", "")
+                cap = float(row.get("Capital Used") or 0)
+                net = float(row.get("Net P&L") or 0)
+                trades_by_index.setdefault(idx, []).append({
+                    "_date": datetime.strptime(row["Date"], "%Y-%m-%d").date(),
+                    "_net": net, "_costs": float(row.get("Costs") or 0),
+                    "_capital_used": cap, "_pct": (net / cap * 100) if cap else 0.0,
+                    "Index": idx,
+                })
+    except Exception as e:
+        import logging
+        logging.getLogger("reports.csv_log").warning("Could not read backtest_best_trades.csv: %s", e)
+    return trades_by_index, labels_by_index
 
 
 def write_backtest_summary_xlsx(rows: list, path: str = None):
@@ -100,6 +154,7 @@ def write_backtest_summary_xlsx(rows: list, path: str = None):
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
+    _BACKTEST_XLSX_PATH = os.path.join(os.path.dirname(__file__), "latest_backtest_summary.xlsx")
     path = path or _BACKTEST_XLSX_PATH
     try:
         ARIAL = "Arial"

@@ -183,6 +183,8 @@ back automatically by the GitHub Actions workflow after every run:
 No download needed to just look -- click the file on github.com and GitHub
 renders it as a table in the browser.
 
+`reports/dashboard.xlsx` combines BOTH live-trading results (plain sheet names: `NIFTY`, `BANKNIFTY`, `FINNIFTY`, `ALL INDICES`) AND the latest backtest's best-per-index strategy (`BT-NIFTY`, `BT-BANKNIFTY`, `BT-FINNIFTY`, `BT-ALL INDICES`) in one file -- each sheet has the same Monthly/Weekly/Daily returns grid plus a statistics box. It's regenerated after every backtest OR paper-trade run using whatever data is currently in the repo, so it stays complete either way. GitHub does NOT preview .xlsx files in the browser -- download it and open in Excel/Google Sheets.
+
 ## 7. Getting a Telegram bot token & chat ID (free)
 
 1. Open Telegram, message **@BotFather**, send `/newbot`, follow the

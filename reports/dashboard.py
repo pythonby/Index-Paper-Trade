@@ -362,22 +362,20 @@ def _write_index_sheet(ws, title, trades, start_cap, S):
                   "are not statistically reliable. Watch this over weeks/months before drawing conclusions.").font = S["note"]
 
 
-def generate_dashboard(trade_log_path: str = None, out_path: str = None, starting_capital: float = None):
+def build_workbook(by_index: dict, start_cap: float, title_note: str = ""):
+    """Shared by both the LIVE dashboard (reads reports/trade_log.csv) and
+    the BACKTEST dashboard (reads backtest trade records instead) -- same
+    Summary + per-index Monthly/Weekly/Daily-grid + Statistics layout
+    either way. `by_index` maps INDEX NAME -> list of trade dicts, each
+    with (at least) _date, _net, _costs, _capital_used, _pct, Index keys."""
     import openpyxl
-    trade_log_path = trade_log_path or _TRADE_LOG_PATH
-    out_path = out_path or _DASHBOARD_PATH
-    start_cap = starting_capital or config.STARTING_CAPITAL
     S = _styles()
-
-    trades = _read_trades(trade_log_path)
-    by_index = defaultdict(list)
-    for t in trades:
-        by_index[(t.get("Index") or "").upper()].append(t)
+    all_trades = [t for tr in by_index.values() for t in tr]
 
     wb = openpyxl.Workbook()
     ws0 = wb.active
     ws0.title = "Summary"
-    ws0["A1"] = "Summary by index -- PAPER TRADE, NOT REAL MONEY"
+    ws0["A1"] = f"Summary by index -- PAPER TRADE, NOT REAL MONEY{title_note}"
     ws0["A1"].font = S["title"]
     heads = ["Index", "Trades", "Win %", "Net P&L (Rs)", "Profit Factor", "Max DD (%)", "Avg P/L per trade (Rs)"]
     for c, h in enumerate(heads, start=1):
@@ -386,7 +384,7 @@ def generate_dashboard(trade_log_path: str = None, out_path: str = None, startin
         ws0.column_dimensions[chr(64 + c)].width = 22 if c == 7 else 15
 
     groups = [(name, by_index.get(name, [])) for name in config.INSTRUMENTS]
-    groups.append(("ALL INDICES", trades))
+    groups.append(("ALL INDICES", all_trades))
     for i, (name, tr) in enumerate(groups):
         r = 4 + i
         ws0.cell(row=r, column=1, value=name).font = S["bold"]
@@ -413,7 +411,7 @@ def generate_dashboard(trade_log_path: str = None, out_path: str = None, startin
 
     for name, tr in groups:
         ws = wb.create_sheet(name)
-        _write_index_sheet(ws, name, tr, start_cap, S)
+        _write_index_sheet(ws, name + title_note, tr, start_cap, S)
 
     from openpyxl.worksheet.properties import PageSetupProperties
     for ws in wb.worksheets:                      # tidy printing / PDF export
@@ -422,8 +420,174 @@ def generate_dashboard(trade_log_path: str = None, out_path: str = None, startin
         ws.page_setup.fitToHeight = 0
         ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
 
+    return wb
+
+
+def generate_dashboard(trade_log_path: str = None, out_path: str = None, starting_capital: float = None):
+    """Builds ONE dashboard.xlsx with BOTH live-trading sheets (prefixed
+    plain, e.g. "NIFTY") AND backtest sheets (prefixed "BT-", e.g.
+    "BT-NIFTY") -- whichever data is currently checked out in the repo.
+    Backtest data comes from reports/backtest_best_trades.csv (written by
+    the backtest job; see reports/csv_log.py) so EITHER the backtest job or
+    the paper-trade job can produce a fully up-to-date combined file,
+    regardless of which one happens to run -- both check out the same repo
+    state, so whichever ran most recently on each side is what shows up."""
+    from reports.csv_log import read_backtest_best_trades_csv
+
+    trade_log_path = trade_log_path or _TRADE_LOG_PATH
+    out_path = out_path or _DASHBOARD_PATH
+    start_cap = starting_capital or config.STARTING_CAPITAL
+
+    trades = _read_trades(trade_log_path)
+    by_index = defaultdict(list)
+    for t in trades:
+        by_index[(t.get("Index") or "").upper()].append(t)
+
+    bt_trades_by_index, bt_labels_by_index = read_backtest_best_trades_csv()
+
+    wb = build_workbook(by_index, start_cap)
+
+    if bt_trades_by_index:
+        S = _styles()
+        bt_all = [t for tr in bt_trades_by_index.values() for t in tr]
+        ws_bt_sum = wb.create_sheet("BT-Summary")
+        ws_bt_sum["A1"] = "BACKTEST summary by index (best strategy per index) -- PAPER TRADE, NOT REAL MONEY"
+        ws_bt_sum["A1"].font = S["title"]
+        heads = ["Index", "Best Strategy", "Trades", "Win %", "Net P&L (Rs)", "Profit Factor", "Max DD (%)"]
+        for c, h in enumerate(heads, start=1):
+            cell = ws_bt_sum.cell(row=3, column=c, value=h)
+            cell.fill, cell.font, cell.alignment, cell.border = S["hfill"], S["hfont"], S["center"], S["border"]
+            ws_bt_sum.column_dimensions[chr(64 + c)].width = 22 if c == 2 else 15
+        bt_groups = [(name, bt_trades_by_index.get(name, [])) for name in config.INSTRUMENTS]
+        bt_groups.append(("ALL INDICES", bt_all))
+        for i, (name, tr) in enumerate(bt_groups):
+            r = 4 + i
+            ws_bt_sum.cell(row=r, column=1, value=name).font = S["bold"]
+            ws_bt_sum.cell(row=r, column=2, value=bt_labels_by_index.get(name, "-" if name != "ALL INDICES" else "(combined)"))
+            if tr:
+                nets = [t["_net"] for t in tr]
+                wins = [n for n in nets if n > 0]
+                loss = abs(sum(n for n in nets if n <= 0))
+                pf = (sum(wins) / loss) if loss else ("inf" if wins else "N/A")
+                _, dd_pct = _drawdown(tr, start_cap)
+                vals = [len(tr), len(wins) / len(tr), round(sum(nets), 2),
+                        pf if isinstance(pf, str) else round(pf, 2), -dd_pct / 100]
+                fmts = ["0", "0.0%", "#,##0.00;-#,##0.00", "0.00", "0.00%"]
+            else:
+                vals, fmts = ["-"] * 5, ["General"] * 5
+                vals[0] = 0
+            for c, (v, f) in enumerate(zip(vals, fmts), start=3):
+                cell = ws_bt_sum.cell(row=r, column=c, value=v)
+                cell.number_format, cell.border, cell.font = f, S["border"], S["norm"]
+                if c == 5 and isinstance(v, (int, float)):
+                    cell.font = S["good"] if v >= 0 else S["bad"]
+            ws_bt_sum.cell(row=r, column=1).border = S["border"]
+            ws_bt_sum.cell(row=r, column=2).border = S["border"]
+        note_row = 4 + len(bt_groups) + 1
+        ws_bt_sum.cell(row=note_row, column=1,
+                 value="BT- sheets are from the BACKTEST (each index's single best combo, so time periods "
+                       "aren't double-counted across competing strategies). Plain-named sheets are LIVE paper "
+                       "trades. See latest_backtest_summary.xlsx for every combo tested.").font = S["note"]
+
+        for name, tr in bt_groups:
+            ws = wb.create_sheet(f"BT-{name}")
+            label_note = f" -- best: {bt_labels_by_index.get(name, '')}" if name != "ALL INDICES" else ""
+            _write_index_sheet(ws, f"BACKTEST {name}{label_note}", tr, start_cap, S)
+
+    from openpyxl.worksheet.properties import PageSetupProperties
+    for ws in wb.worksheets:
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+
     wb.save(out_path)
     return out_path
+
+
+_BACKTEST_DASHBOARD_PATH = os.path.join(os.path.dirname(__file__), "latest_backtest_dashboard.xlsx")
+
+
+def generate_backtest_dashboard(best_trades_by_index: dict, labels_by_index: dict,
+                                 out_path: str = None, starting_capital: float = None):
+    """Same Monthly/Weekly/Daily-grid + Statistics layout as the live
+    dashboard, but built from BACKTEST trade records instead -- one sheet
+    per index, showing the single BEST-performing strategy/EMA combo found
+    for that index (since combining every tested combo's trades together
+    would double-count the same time period across competing strategies).
+
+    best_trades_by_index: {index_name: [adapted trade dicts]} (see main.py's
+    call site for how raw backtest trade records get adapted).
+    labels_by_index: {index_name: "strategy_name (EMAx/y)"} -- shown in each
+    sheet's title so it's clear which strategy the grid represents.
+    """
+    out_path = out_path or _BACKTEST_DASHBOARD_PATH
+    start_cap = starting_capital or config.STARTING_CAPITAL
+    try:
+        # per-index title note so each sheet says which strategy it is
+        wb = None
+        import openpyxl
+        S = _styles()
+        wb = openpyxl.Workbook()
+        all_trades = [t for tr in best_trades_by_index.values() for t in tr]
+        ws0 = wb.active
+        ws0.title = "Summary"
+        ws0["A1"] = "Backtest Summary by index (best strategy per index) -- PAPER TRADE, NOT REAL MONEY"
+        ws0["A1"].font = S["title"]
+        heads = ["Index", "Best Strategy", "Trades", "Win %", "Net P&L (Rs)", "Profit Factor", "Max DD (%)"]
+        for c, h in enumerate(heads, start=1):
+            cell = ws0.cell(row=3, column=c, value=h)
+            cell.fill, cell.font, cell.alignment, cell.border = S["hfill"], S["hfont"], S["center"], S["border"]
+            ws0.column_dimensions[chr(64 + c)].width = 22 if c == 2 else 15
+        groups = [(name, best_trades_by_index.get(name, [])) for name in config.INSTRUMENTS]
+        groups.append(("ALL INDICES", all_trades))
+        for i, (name, tr) in enumerate(groups):
+            r = 4 + i
+            ws0.cell(row=r, column=1, value=name).font = S["bold"]
+            ws0.cell(row=r, column=2, value=labels_by_index.get(name, "-" if name != "ALL INDICES" else "(combined)"))
+            if tr:
+                nets = [t["_net"] for t in tr]
+                wins = [n for n in nets if n > 0]
+                loss = abs(sum(n for n in nets if n <= 0))
+                pf = (sum(wins) / loss) if loss else ("inf" if wins else "N/A")
+                _, dd_pct = _drawdown(tr, start_cap)
+                vals = [len(tr), len(wins) / len(tr), round(sum(nets), 2),
+                        pf if isinstance(pf, str) else round(pf, 2), -dd_pct / 100]
+                fmts = ["0", "0.0%", "#,##0.00;-#,##0.00", "0.00", "0.00%"]
+            else:
+                vals, fmts = ["-"] * 5, ["General"] * 5
+                vals[0] = 0
+            for c, (v, f) in enumerate(zip(vals, fmts), start=3):
+                cell = ws0.cell(row=r, column=c, value=v)
+                cell.number_format, cell.border, cell.font = f, S["border"], S["norm"]
+                if c == 5 and isinstance(v, (int, float)):
+                    cell.font = S["good"] if v >= 0 else S["bad"]
+            ws0.cell(row=r, column=1).border = S["border"]
+            ws0.cell(row=r, column=2).border = S["border"]
+        note_row = 4 + len(groups) + 1
+        ws0.cell(row=note_row, column=1,
+                 value="Each index sheet shows ONLY its single best-performing strategy/EMA combo from this "
+                       "backtest -- not all combos combined (that would double-count the same time period "
+                       "across competing strategies). See latest_backtest_summary.xlsx for every combo.").font = S["note"]
+
+        for name, tr in groups:
+            ws = wb.create_sheet(name)
+            title_note = f" -- best: {labels_by_index.get(name, '')}" if name != "ALL INDICES" else ""
+            _write_index_sheet(ws, name + title_note, tr, start_cap, S)
+
+        from openpyxl.worksheet.properties import PageSetupProperties
+        for ws in wb.worksheets:
+            ws.page_setup.orientation = "landscape"
+            ws.page_setup.fitToWidth = 1
+            ws.page_setup.fitToHeight = 0
+            ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+
+        wb.save(out_path)
+        return out_path
+    except Exception as e:
+        import logging
+        logging.getLogger("reports.dashboard").warning("Could not write latest_backtest_dashboard.xlsx: %s", e)
+        return None
 
 
 if __name__ == "__main__":

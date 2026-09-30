@@ -151,6 +151,13 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
           "and --index to narrow a run, or 'all' for a full sweep.)\n")
 
     all_results = {}
+    # Tracks the single best-net-P&L combo per index (with >=5 trades, so a
+    # 1-2 trade fluke can't "win") -- used to build reports/
+    # latest_backtest_dashboard.xlsx with a real monthly/weekly/daily
+    # returns grid from actual backtest trade dates, same layout as the
+    # live dashboard.
+    _MIN_TRADES_FOR_DASHBOARD = 5
+    best_by_index = {}  # index_name -> {"net_pnl":..., "label":..., "trades":[...]}
     any_robust = False
 
     strategy_registry = [
@@ -232,6 +239,15 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
                         metrics["walk_forward_robust"] = fold_summary["overall_robust"]
                         all_results[key] = metrics
 
+                        if metrics.get("num_trades", 0) >= _MIN_TRADES_FOR_DASHBOARD:
+                            net = metrics.get("net_pnl", 0)
+                            cur_best = best_by_index.get(index_name)
+                            if cur_best is None or net > cur_best["net_pnl"]:
+                                best_by_index[index_name] = {
+                                    "net_pnl": net, "label": f"{label} [{timeframe_min}m]",
+                                    "trades": full_result.trades,
+                                }
+
                         if fold_summary["overall_robust"]:
                             any_robust = True
                         print(f"[{index_name} {timeframe_min}m] {label}: "
@@ -266,6 +282,49 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
     csv_rows.sort(key=lambda r: r["Net P&L"] if isinstance(r["Net P&L"], (int, float)) else -1e18, reverse=True)
     write_backtest_summary_csv(csv_rows)
     write_backtest_summary_xlsx(csv_rows)
+
+    # Build reports/latest_backtest_dashboard.xlsx: the same monthly/weekly/
+    # daily returns-grid + statistics layout as the live dashboard, but from
+    # each index's single best-performing backtest combo (>=5 trades) so
+    # there's finally a grid-style view of the much larger backtest sample
+    # instead of waiting weeks for live trades to accumulate.
+    try:
+        from reports.dashboard import generate_backtest_dashboard
+        best_trades_by_index, labels_by_index = {}, {}
+        for index_name, info in best_by_index.items():
+            adapted = []
+            for t in info["trades"]:
+                entry_time = str(t.get("entry_time", ""))
+                try:
+                    d = dt.datetime.strptime(entry_time[:10], "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                capital_used = t.get("entry_execution_price", 0.0) * t.get("quantity", 0)
+                net = t.get("net_pnl", 0.0)
+                adapted.append({
+                    "_date": d, "_net": net,
+                    "_costs": t.get("slippage_cost", 0.0) + t.get("charges", 0.0),
+                    "_capital_used": capital_used,
+                    "_pct": (net / capital_used * 100) if capital_used else 0.0,
+                    "Index": index_name,
+                })
+            adapted.sort(key=lambda r: r["_date"])
+            best_trades_by_index[index_name] = adapted
+            labels_by_index[index_name] = info["label"]
+        generate_backtest_dashboard(best_trades_by_index, labels_by_index)
+        print("Backtest dashboard written: reports/latest_backtest_dashboard.xlsx")
+
+        # Also persist the raw trades + regenerate the COMBINED dashboard.xlsx
+        # (live + backtest sheets together) -- see reports/dashboard.py's
+        # generate_dashboard() docstring for why this works regardless of
+        # which job (backtest or paper-trade) runs.
+        from reports.csv_log import write_backtest_best_trades_csv
+        write_backtest_best_trades_csv(best_trades_by_index, labels_by_index)
+        from reports.dashboard import generate_dashboard
+        generate_dashboard()
+        print("Combined dashboard.xlsx updated with backtest sheets.")
+    except Exception as e:
+        print(f"Could not build latest_backtest_dashboard.xlsx (non-fatal): {e}")
 
     print("\n" + "=" * 100)
     if any_robust:
