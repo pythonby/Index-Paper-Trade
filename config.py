@@ -28,6 +28,16 @@ DEFAULT_TIMEFRAME_MIN = 5
 
 INTRADAY_ONLY = True
 SQUARE_OFF_TIME = time(15, 15)        # force-close all paper positions by this time
+# Self-imposed safety budget for the ENTIRE live paper-trading loop's wall-
+# clock runtime (see main.py's run_paper_trading_mode()). This exists
+# because GitHub Actions' free tier hard-caps a single job at 360 minutes,
+# and the full NSE session (market open to SQUARE_OFF_TIME above) is
+# itself ~365 minutes if the job starts a few minutes before market open --
+# already over that cap before counting setup time. Without this check,
+# GitHub can kill the process mid-position, silently losing that trade
+# (never recorded, never reported). Keep this comfortably under your
+# workflow file's "paper-trade" job's timeout-minutes value.
+PAPER_TRADE_MAX_RUNTIME_MINUTES = 335
 MARKET_OPEN_TIME = time(9, 15)
 MARKET_CLOSE_TIME = time(15, 30)
 # Avoid the first few minutes of chop and last minutes of illiquidity

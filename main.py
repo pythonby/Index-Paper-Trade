@@ -147,6 +147,12 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         instruments = [index_arg.upper()]
 
     print(f"\nStarting backtest across instruments {instruments} x timeframes {timeframes} x strategies...\n")
+    if timeframes == config.TIMEFRAMES_MIN and instruments == config.INSTRUMENTS:
+        print("⚠️  WARNING: --timeframe all --index all, WITH Angel One's ~1-year history, is too "
+              "slow to finish inside a single GitHub Actions job (free tier hard-caps a job at 360 "
+              "minutes) -- a run this wide has been observed to still be running past 5h40m. Prefer "
+              "narrowing to one index OR one timeframe per manual run; the scheduled daily run already "
+              "defaults to a single timeframe for this reason.\n")
     print("(Testing more timeframes/instruments/EMA combinations takes longer -- use --timeframe "
           "and --index to narrow a run, or 'all' for a full sweep.)\n")
 
@@ -527,8 +533,35 @@ def run_paper_trading_mode(timeframe_arg: str = None, index_arg: str = None):
         return
 
     try:
+        job_start = now_ist()
+        # GitHub Actions free-tier hard-caps a single job at 360 minutes --
+        # and the full NSE session (9:15 to the 15:15 square-off) is itself
+        # ~365 minutes from a job that starts a few minutes before market
+        # open, which is ALREADY over that cap before counting Python/
+        # dependency setup time. Relying only on the clock-time square-off
+        # check above is therefore not safe: GitHub can kill this process
+        # with SIGTERM/SIGKILL before 15:15 ever arrives, and a position
+        # still open at that instant is simply LOST -- never recorded, never
+        # reported, capital impact never accounted for (a real bug this
+        # project hit). This self-imposed wall-clock budget forces a clean,
+        # reported square-off well before that can happen. Keep this safely
+        # under the paper-trade job's timeout-minutes in the workflow file.
+        max_runtime_minutes = config.PAPER_TRADE_MAX_RUNTIME_MINUTES
         while True:
             now_t = now_ist().time()
+            elapsed_minutes = (now_ist() - job_start).total_seconds() / 60
+            if elapsed_minutes >= max_runtime_minutes:
+                for eng in engines:
+                    eng.force_square_off_all(
+                        f"Self-imposed runtime budget ({max_runtime_minutes} min) reached -- "
+                        f"exiting before GitHub Actions' own job timeout can kill the process "
+                        f"mid-position (see config.PAPER_TRADE_MAX_RUNTIME_MINUTES)."
+                    )
+                print(f"Runtime budget of {max_runtime_minutes} min reached ({elapsed_minutes:.0f} min elapsed). "
+                      f"Squaring off and exiting cleanly before GitHub's own job timeout can.")
+                _send_end_of_day_report()
+                break
+
             if now_t >= config.SQUARE_OFF_TIME:
                 for eng in engines:
                     eng.force_square_off_all("End-of-day square-off")
