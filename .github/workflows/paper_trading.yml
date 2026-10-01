@@ -2,13 +2,10 @@ name: NSE Paper Trading Bot
 
 # Runs entirely on GitHub's free cloud runners. Nothing installs on your PC.
 #
-# Backtest and live paper trading run as TWO SEPARATE JOBS in this workflow.
-# GitHub Actions runs jobs in parallel by default unless one explicitly
-# `needs:` the other -- neither job here does, so both start at the same
-# time and run independently. This is safe because backtest never writes
-# to the shared trade database (db/trading.db) -- it only computes results
-# in memory and reports them via print/Telegram, so there's no conflict
-# with the live engine's database reads/writes.
+# Backtest and live paper trading run as TWO SEPARATE, PARALLEL JOBS, plus a
+# THIRD job ("combine-dashboard") that waits for both to finish before
+# building reports/dashboard.xlsx -- see that job's comments for why it has
+# to run separately instead of each of the other two building it themselves.
 #
 # Schedule: triggers every weekday at 9:10 AM IST (3:40 AM UTC), which is
 # a few minutes before market open. NOTE: GitHub's free-tier scheduled
@@ -172,3 +169,48 @@ jobs:
           name: logs-${{ github.run_id }}
           path: logs/
           retention-days: 30
+
+  combine-dashboard:
+    # Builds reports/dashboard.xlsx (live + backtest sheets together) in ONE
+    # place, ONLY after both other jobs finish -- this used to be done by
+    # EACH of backtest and paper-trade separately, but since they run in
+    # PARALLEL, whichever one pushed last would silently overwrite the
+    # other's half of the data with a stale version it had built from an
+    # older checkout (a real bug this project hit: the file would sometimes
+    # come out completely empty). `needs:` forces this job to wait for both,
+    # so its checkout always has everything both jobs already pushed.
+    needs: [backtest, paper-trade]
+    if: always()   # still build with whatever data exists even if one job failed
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build combined dashboard.xlsx
+        run: python -u -c "from reports.dashboard import generate_dashboard; print('Wrote', generate_dashboard())"
+
+      - name: Commit combined dashboard
+        continue-on-error: true
+        run: |
+          git config user.name "nse-paper-bot"
+          git config user.email "actions@github.com"
+          git add reports/dashboard.xlsx
+          if git diff --cached --quiet; then
+            echo "No dashboard changes to commit."
+            exit 0
+          fi
+          git commit -m "Update combined dashboard [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase --autostash && git push && break
+            echo "Push attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done

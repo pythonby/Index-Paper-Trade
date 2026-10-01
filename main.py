@@ -314,15 +314,17 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         generate_backtest_dashboard(best_trades_by_index, labels_by_index)
         print("Backtest dashboard written: reports/latest_backtest_dashboard.xlsx")
 
-        # Also persist the raw trades + regenerate the COMBINED dashboard.xlsx
-        # (live + backtest sheets together) -- see reports/dashboard.py's
-        # generate_dashboard() docstring for why this works regardless of
-        # which job (backtest or paper-trade) runs.
+        # NOTE: dashboard.xlsx itself is intentionally NOT regenerated here.
+        # backtest and paper-trade run as PARALLEL GitHub Actions jobs --
+        # if both tried to build+push the combined dashboard.xlsx, whichever
+        # pushed last would silently clobber the other's data with a stale
+        # version (a real bug this project hit). A separate "combine-
+        # dashboard" job, which runs only after BOTH finish (see the
+        # workflow file), builds it exactly once from a fresh checkout that
+        # has both sides' data.
         from reports.csv_log import write_backtest_best_trades_csv
         write_backtest_best_trades_csv(best_trades_by_index, labels_by_index)
-        from reports.dashboard import generate_dashboard
-        generate_dashboard()
-        print("Combined dashboard.xlsx updated with backtest sheets.")
+        print("backtest_best_trades.csv written (combine-dashboard job builds dashboard.xlsx).")
     except Exception as e:
         print(f"Could not build latest_backtest_dashboard.xlsx (non-fatal): {e}")
 
@@ -408,14 +410,11 @@ def _send_end_of_day_report():
     _maybe_send_weekly_report()
     _maybe_send_monthly_report()
 
-    try:
-        from reports.dashboard import generate_dashboard
-        generate_dashboard()
-        print("Dashboard regenerated: reports/dashboard.xlsx")
-    except Exception as e:
-        # Dashboard generation is a nice-to-have -- never let it break the
-        # trading loop or block the (already-sent) Telegram reports.
-        print(f"Could not regenerate dashboard.xlsx (non-fatal): {e}")
+    # NOTE: dashboard.xlsx is intentionally NOT regenerated here -- see the
+    # matching note in run_backtest_mode() for why (parallel-job race
+    # condition). trade_log.csv (already written per-trade by paper_trading/
+    # engine.py) is all this job needs to contribute; a separate "combine-
+    # dashboard" workflow job builds dashboard.xlsx once both jobs finish.
 
 
 def _entry_date(trade: dict):
