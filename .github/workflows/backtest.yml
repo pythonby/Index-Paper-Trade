@@ -1,0 +1,141 @@
+name: NSE Backtest Bot
+
+# Split from paper_trading.yml into its own workflow so backtest and live
+# paper-trading can be triggered, scheduled, and reasoned about
+# independently of each other.
+#
+# Runs as a MATRIX: one job per index (NIFTY / BANKNIFTY / FINNIFTY), in
+# parallel. This exists because a single job doing all 3 indices with
+# --timeframe all and ~1 year of Angel One history was observed taking
+# 5h40m+ without finishing -- well past GitHub's free-tier 360-minute
+# per-job hard cap. Splitting by index gives each shard roughly 1/3 the
+# work, comfortably inside the cap, and the 3 shards run at the same time
+# instead of one after another.
+#
+# Each shard does NOT commit to git directly (3 parallel jobs pushing to
+# the same repo at once would hit the same race condition dashboard.xlsx
+# generation already hit) -- it uploads its reports/ files as a build
+# artifact. A separate "combine" job, which waits for all 3 shards, merges
+# the 3 artifacts into the final files and does the one git commit.
+
+on:
+  schedule:
+    - cron: "40 3 * * 1-5"   # 3:40 AM UTC = 9:10 AM IST, Mon-Fri
+  workflow_dispatch:
+    inputs:
+      timeframe:
+        description: "Timeframe: a number (1,3,5,15,30,60) or 'all'"
+        required: false
+        default: "5"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false   # one index failing shouldn't cancel the other two
+      matrix:
+        index: [NIFTY, BANKNIFTY, FINNIFTY]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest for ${{ matrix.index }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
+          ANGEL_CLIENT_CODE: ${{ secrets.ANGEL_CLIENT_CODE }}
+          ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
+          ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
+          ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
+        run: python -u main.py backtest --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ matrix.index }}" --no-telegram
+
+      - name: Upload this shard's results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-shard-${{ matrix.index }}
+          path: |
+            reports/latest_backtest_summary.csv
+            reports/backtest_best_trades.csv
+          retention-days: 7
+          if-no-files-found: warn
+
+  combine:
+    needs: backtest
+    if: always()   # still combine whatever shards succeeded even if one failed/timed out
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: backtest-shard-*
+          path: shard-artifacts
+
+      - name: Merge shards into the final combined reports
+        run: |
+          python -m reports.combine shard-artifacts/backtest-shard-NIFTY shard-artifacts/backtest-shard-BANKNIFTY shard-artifacts/backtest-shard-FINNIFTY --out reports
+
+      - name: Send backtest summary to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -u -c "
+          import csv
+          from notify import telegram
+          from reports.performance import build_telegram_summary
+          with open('reports/latest_backtest_summary.csv', newline='') as f:
+              rows = list(csv.DictReader(f))
+          results = {}
+          for r in rows:
+              key = (f\"{r['Strategy']} ({r['EMA']})\" if r['EMA'] else r['Strategy'], r['Index'], r['Timeframe'].rstrip('m'))
+              results[key] = {'num_trades': int(r['Trades']), 'win_rate': float(r['Win Rate %']),
+                               'profit_factor': (float(r['Profit Factor']) if r['Profit Factor'] not in ('inf','') else float('inf')),
+                               'net_pnl': float(r['Net P&L'])}
+          summary = build_telegram_summary(results)
+          telegram.send_backtest_summary(summary)
+          print('Telegram summary sent.')
+          "
+
+      - name: Commit combined reports
+        continue-on-error: true
+        run: |
+          git config user.name "nse-paper-bot"
+          git config user.email "actions@github.com"
+          git add reports/
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Update combined backtest results [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase --autostash && git push && break
+            echo "Push attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done

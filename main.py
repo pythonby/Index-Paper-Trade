@@ -131,7 +131,7 @@ def build_strategy_set(timeframe_min: int = None):
     return strategies
 
 
-def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
+def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None, send_telegram: bool = True):
     print_first_run_status()
 
     if timeframe_arg is None or timeframe_arg == "default":
@@ -351,11 +351,19 @@ def run_backtest_mode(timeframe_arg: str = None, index_arg: str = None):
         print(selection_text)
     print("=" * 100)
 
-    telegram_summary = f"{selection_text}\n\n{build_telegram_summary(all_results)}"
-    try:
-        telegram.send_backtest_summary(telegram_summary)
-    except telegram.TelegramError:
-        logging.getLogger("main").warning("Could not send backtest summary to Telegram (still printed above/in logs).")
+    if send_telegram:
+        telegram_summary = f"{selection_text}\n\n{build_telegram_summary(all_results)}"
+        try:
+            telegram.send_backtest_summary(telegram_summary)
+        except telegram.TelegramError:
+            logging.getLogger("main").warning("Could not send backtest summary to Telegram (still printed above/in logs).")
+    else:
+        # Used when this is one shard of a multi-index matrix run (see
+        # .github/workflows/backtest.yml) -- sending a per-shard (single
+        # index) Telegram message would be noisy and confusing alongside
+        # the ONE combined summary the "combine" job sends afterward.
+        print("send_telegram=False: skipping this shard's own Telegram message "
+              "(the combine job sends one combined summary for all shards).")
 
 
 def _compute_and_send_period_report(period_label: str, trades: list):
@@ -627,6 +635,14 @@ if __name__ == "__main__":
             "If omitted, runs all instruments (same as 'all')."
         ),
     )
+    parser.add_argument(
+        "--no-telegram", action="store_true",
+        help=(
+            "Backtest only: skip sending this run's own Telegram summary. Used when this is "
+            "one shard of a multi-index matrix run (see .github/workflows/backtest.yml) -- a "
+            "separate 'combine' job sends ONE combined summary afterward instead."
+        ),
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -634,7 +650,7 @@ if __name__ == "__main__":
     try:
         database.init_db()
         if args.mode == "backtest":
-            run_backtest_mode(args.timeframe, args.index)
+            run_backtest_mode(args.timeframe, args.index, send_telegram=not args.no_telegram)
         elif args.mode == "paper":
             run_paper_trading_mode(args.timeframe, args.index)
         elif args.mode == "status":

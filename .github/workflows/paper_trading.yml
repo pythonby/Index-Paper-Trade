@@ -2,10 +2,12 @@ name: NSE Paper Trading Bot
 
 # Runs entirely on GitHub's free cloud runners. Nothing installs on your PC.
 #
-# Backtest and live paper trading run as TWO SEPARATE, PARALLEL JOBS, plus a
-# THIRD job ("combine-dashboard") that waits for both to finish before
-# building reports/dashboard.xlsx -- see that job's comments for why it has
-# to run separately instead of each of the other two building it themselves.
+# Backtest now lives in its OWN workflow file (.github/workflows/
+# backtest.yml), split out so the two can be triggered, scheduled, and
+# reasoned about independently -- this file only runs live paper trading,
+# plus a "combine-dashboard" job that rebuilds reports/dashboard.xlsx after
+# paper-trade finishes (it picks up whatever backtest data backtest.yml's
+# own "combine" job already committed, whenever that last ran).
 #
 # Schedule: triggers every weekday at 9:10 AM IST (3:40 AM UTC), which is
 # a few minutes before market open. NOTE: GitHub's free-tier scheduled
@@ -38,64 +40,6 @@ permissions:
   contents: write
 
 jobs:
-  backtest:
-    runs-on: ubuntu-latest
-    # NOTE: with Angel One configured, backtest pulls up to ~1 year of
-    # history per index/timeframe instead of Yahoo's free ~60-day cap (see
-    # data/angelone_fetcher.py) -- this gives far more trades per strategy
-    # combination to judge, but takes noticeably longer to compute. Bumped
-    # from 90 to 340 min (GitHub's hard cap is 360) to be safe for a full
-    # --timeframe all --index all sweep. Narrow to one timeframe/index via
-    # the workflow_dispatch inputs for a much faster iterative test.
-    timeout-minutes: 340
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run backtest
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Needed for the longer-history backtest via Angel One's historical
-          # API (data/angelone_fetcher.py). Without these, backtest silently
-          # falls back to yfinance's free ~60-day cap -- no error, just far
-          # fewer trades per combination than possible.
-          ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
-          ANGEL_CLIENT_CODE: ${{ secrets.ANGEL_CLIENT_CODE }}
-          ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
-          ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
-          ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
-        run: python -u main.py backtest --timeframe "${{ github.event.inputs.timeframe || '5' }}" --index "${{ github.event.inputs.index || 'all' }}"
-
-      - name: Commit updated backtest summary table
-        if: always()
-        continue-on-error: true   # a reporting/commit hiccup must never turn the whole run red
-        run: |
-          git config user.name "nse-paper-bot"
-          git config user.email "actions@github.com"
-          # "git add <file>" exits 128 if the file doesn't exist (e.g. backtest
-          # produced no rows) -- adding the whole folder never errors on that.
-          git add reports/ || true
-          if git diff --cached --quiet; then
-            echo "No backtest summary changes to commit."
-            exit 0
-          fi
-          git commit -m "Update backtest summary table [skip ci]"
-          for i in 1 2 3; do
-            git pull --rebase --autostash && git push && break
-            echo "Push attempt $i failed, retrying..."
-            sleep $((i * 5))
-          done
-
   paper-trade:
     runs-on: ubuntu-latest
     timeout-minutes: 350       # GitHub's hard cap is 360 min (6h) -- stay safely under it
@@ -171,16 +115,14 @@ jobs:
           retention-days: 30
 
   combine-dashboard:
-    # Builds reports/dashboard.xlsx (live + backtest sheets together) in ONE
-    # place, ONLY after both other jobs finish -- this used to be done by
-    # EACH of backtest and paper-trade separately, but since they run in
-    # PARALLEL, whichever one pushed last would silently overwrite the
-    # other's half of the data with a stale version it had built from an
-    # older checkout (a real bug this project hit: the file would sometimes
-    # come out completely empty). `needs:` forces this job to wait for both,
-    # so its checkout always has everything both jobs already pushed.
-    needs: [backtest, paper-trade]
-    if: always()   # still build with whatever data exists even if one job failed
+    # Builds reports/dashboard.xlsx (live sheets + whatever backtest sheets
+    # are already committed) after paper-trade finishes. Does NOT need to
+    # wait on a backtest job anymore -- backtest now runs as its own
+    # workflow (backtest.yml) with its own "combine" job that commits
+    # backtest data independently. This job just needs paper-trade's fresh
+    # trade_log.csv to be in the checkout before rebuilding the combined file.
+    needs: paper-trade
+    if: always()   # still build with whatever data exists even if paper-trade failed
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
