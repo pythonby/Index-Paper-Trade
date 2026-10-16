@@ -10,10 +10,3 @@ Date,Index,Strategy,Net P&L,Costs,Capital Used
 2026-08-11,BANKNIFTY,trend_scalp_nw (EMA5/21) [5m],-354.9,72.3,2391.6
 2026-08-25,BANKNIFTY,trend_scalp_nw (EMA5/21) [5m],-212.82,43.17,1434.3
 2026-10-13,BANKNIFTY,trend_scalp_nw (EMA5/21) [5m],-177.91,36.16,1199.25
-2025-12-02,FINNIFTY,trend_scalp_nw (EMA9/26) [5m],-206.92,42.12,1395.2
-2025-12-09,FINNIFTY,trend_scalp_nw (EMA9/26) [5m],-245.54,49.94,1653.6
-2025-12-09,FINNIFTY,trend_scalp_nw (EMA9/26) [5m],-295.95,60.35,1994.4
-2025-12-09,FINNIFTY,trend_scalp_nw (EMA9/26) [5m],-189.84,38.64,1277.2
-2026-01-27,FINNIFTY,trend_scalp_nw (EMA9/26) [5m],-287.01,58.21,1934.4
-2026-04-07,FINNIFTY,trend_scalp_nw (EMA9/26) [5m],236.98,51.82,1466.0
-2026-09-08,FINNIFTY,trend_scalp_nw (EMA9/26) [5m],-231.31,47.31,1557.2
