@@ -1,6 +1,1 @@
 Date,Index,Strategy,Net P&L,Costs,Capital Used
-2026-03-24,NIFTY,vwap_ema_momentum (EMA9/13) [5m],-268.25,22.5,831.0
-2026-03-24,NIFTY,vwap_ema_momentum (EMA9/13) [5m],492.36,37.64,896.75
-2026-03-24,NIFTY,vwap_ema_momentum (EMA9/13) [5m],-299.45,25.2,927.75
-2026-05-12,NIFTY,vwap_ema_momentum (EMA9/13) [5m],548.01,41.74,997.5
-2026-10-13,NIFTY,vwap_ema_momentum (EMA9/13) [5m],-195.52,16.52,606.0
